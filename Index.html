@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <base target="_top">
+    <meta charset="utf-8">
+    <?!= include('Styles'); ?>
+  </head>
+  <body>
+    <div id="app">
+      <!-- PANTALLA DE LOGIN -->
+      <div id="login-screen" class="screen login-screen">
+        <div class="login-card">
+          <div class="brand-mark">P</div>
+          <h1>PARACEL · Gestor Colaborativo</h1>
+          <p class="muted">
+            Cronograma, calendario, equipos, adjuntos y panel ejecutivo en una sola app.
+          </p>
+          <form id="login-form" class="form-grid compact">
+            <div class="col-12">
+              <label>
+                <span>Usuario</span>
+                <input id="login-username" type="text" autocomplete="username" required value="diego">
+              </label>
+            </div>
+            <div class="col-12">
+              <label>
+                <span>Contraseña</span>
+                <input id="login-password" type="password" autocomplete="current-password" required value="Diego2026!">
+              </label>
+            </div>
+            <div class="col-12">
+              <button type="submit" class="btn primary wide">Ingresar</button>
+            </div>
+          </form>
+          <div class="login-help">
+            <div><strong>Credenciales iniciales:</strong></div>
+            <div>diego / Diego2026!</div>
+            <div>admin / Admin2026!</div>
+          </div>
+          <div id="login-error" class="error-box hidden"></div>
+        </div>
+      </div>
+
+      <!-- PANTALLA PRINCIPAL -->
+      <div id="main-screen" class="screen hidden">
+        <header class="topbar">
+          <div class="topbar-left">
+            <div class="brand-mark small">P</div>
+            <div>
+              <div class="app-title">PARACEL · Gestor Colaborativo</div>
+              <div class="app-subtitle">Planeación, coordinación y seguimiento operativo</div>
+            </div>
+          </div>
+          <div class="topbar-center">
+            <div id="message-bar" class="message-bar"></div>
+          </div>
+          <div class="topbar-right">
+            <div class="session-box">
+              <div id="session-name" class="session-name"></div>
+              <div id="session-role" class="session-role"></div>
+            </div>
+            <button id="btn-refresh" class="btn ghost">Actualizar</button>
+            <button id="btn-logout" class="btn dark">Salir</button>
+          </div>
+        </header>
+
+        <div class="shell">
+          <aside class="sidebar">
+            <button class="nav-btn active" data-tab="dashboard">📊 Panel ejecutivo</button>
+            <button class="nav-btn" data-tab="timeline">📅 Cronograma</button>
+            <button class="nav-btn" data-tab="calendar">🗓️ Calendario</button>
+            <button class="nav-btn" data-tab="team">👥 Equipos</button>
+            <button class="nav-btn" data-tab="files">📁 Archivos</button>
+            <button class="nav-btn" data-tab="settings">⚙️ Configuración</button>
+
+            <div class="sidebar-block">
+              <div class="sidebar-title">Filtros rápidos</div>
+              <label>
+                <span>Proyecto</span>
+                <select id="filter-project"></select>
+              </label>
+              <label style="margin-top:10px">
+                <span>Estado</span>
+                <select id="filter-status">
+                  <option value="">Todos</option>
+                  <option>Pendiente</option>
+                  <option>En curso</option>
+                  <option>Bloqueada</option>
+                  <option>Completada</option>
+                  <option>Atrasada</option>
+                </select>
+              </label>
+              <label style="margin-top:10px">
+                <span>Prioridad</span>
+                <select id="filter-priority">
+                  <option value="">Todas</option>
+                  <option>Crítica</option>
+                  <option>Alta</option>
+                  <option>Media</option>
+                  <option>Baja</option>
+                </select>
+              </label>
+              <label style="margin-top:10px">
+                <span>Buscar</span>
+                <input id="filter-search" type="text" placeholder="Título, descripción, responsable">
+              </label>
+              <button id="btn-new-task" class="btn primary wide" style="margin-top:12px">+ Nueva tarea</button>
+            </div>
+
+            <div class="sidebar-block">
+              <div class="sidebar-title">Digest ejecutivo</div>
+              <p class="muted small">
+                De lunes a viernes se envía un resumen automático de tareas urgentes a diego.meza@paracel.com.py.
+              </p>
+              <button id="btn-preview-digest" class="btn success wide">Vista previa del digest</button>
+            </div>
+          </aside>
+
+          <main class="content">
+            <section id="tab-dashboard" class="tab-section active"></section>
+            <section id="tab-timeline"  class="tab-section"></section>
+            <section id="tab-calendar"  class="tab-section"></section>
+            <section id="tab-team"      class="tab-section"></section>
+            <section id="tab-files"     class="tab-section"></section>
+            <section id="tab-settings"  class="tab-section"></section>
+          </main>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL: TAREA -->
+    <div id="task-modal" class="modal hidden">
+      <div class="modal-card xl">
+        <div class="modal-header">
+          <div>
+            <h2 id="task-modal-title">Nueva tarea</h2>
+            <div class="muted small">Doble clic en bloque del cronograma para abrir la edición directamente.</div>
+          </div>
+          <button class="icon-btn" data-close-modal="task-modal">✕</button>
+        </div>
+        <div class="modal-body">
+          <form id="task-form" class="form-grid">
+            <input id="task-id" type="hidden">
+            <div class="col-3"><label><span>Proyecto</span><select id="task-project" required></select></label></div>
+            <div class="col-3">
+              <label><span>Tipo</span>
+                <select id="task-type">
+                  <option>Tema</option><option>Subtema</option><option selected>Actividad</option><option>Hito</option>
+                </select>
+              </label>
+            </div>
+            <div class="col-3">
+              <label><span>Estado</span>
+                <select id="task-status">
+                  <option>Pendiente</option><option>En curso</option><option>Bloqueada</option>
+                  <option>Completada</option><option>Atrasada</option><option>Cancelada</option>
+                </select>
+              </label>
+            </div>
+            <div class="col-3">
+              <label><span>Prioridad</span>
+                <select id="task-priority">
+                  <option>Crítica</option><option>Alta</option><option selected>Media</option><option>Baja</option>
+                </select>
+              </label>
+            </div>
+            <div class="col-6"><label><span>Título</span><input id="task-title" type="text" required></label></div>
+            <div class="col-6"><label><span>Responsable</span><select id="task-assignee"></select></label></div>
+            <div class="col-6"><label><span>Tarea padre</span><select id="task-parent"></select></label></div>
+            <div class="col-6"><label><span>Dependencias (IDs o títulos)</span><input id="task-dependencies" type="text"></label></div>
+            <div class="col-3"><label><span>Fecha inicio</span><input id="task-start" type="date"></label></div>
+            <div class="col-3"><label><span>Fecha fin</span><input id="task-due" type="date"></label></div>
+            <div class="col-3"><label><span>Avance (%)</span><input id="task-progress" type="number" min="0" max="100" step="1" value="0"></label></div>
+            <div class="col-3"><label><span>Horas estimadas</span><input id="task-estimated-hours" type="number" min="0" step="0.5"></label></div>
+            <div class="col-3"><label><span>Horas reales</span><input id="task-actual-hours" type="number" min="0" step="0.5"></label></div>
+            <div class="col-9"><label><span>Etiquetas</span><input id="task-tags" type="text" placeholder="riesgo, informe, reunión"></label></div>
+            <div class="col-6">
+              <label>
+                <span>Ruta o directorio de trabajo</span>
+                <input id="task-work-path" type="text" placeholder="G:/Mi unidad/Carpeta del proyecto">
+              </label>
+            </div>
+            <div class="col-6">
+              <label>
+                <span>Enlace de carpeta Drive/recurso</span>
+                <input id="task-folder-url" type="url" placeholder="https://drive.google.com/...">
+              </label>
+            </div>
+            <div class="col-12"><label><span>Descripción</span><textarea id="task-description" rows="4"></textarea></label></div>
+            <div class="col-12"><label><span>Comentario de seguimiento</span><textarea id="task-comment" rows="2" placeholder="Opcional"></textarea></label></div>
+            <div class="col-12">
+              <label>
+                <span>Adjuntar foto o archivo (cámara o archivo local)</span>
+                <input id="task-upload" type="file" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv" capture="environment">
+              </label>
+              <img id="upload-preview" class="upload-preview" alt="Vista previa del adjunto">
+              <div id="upload-progress" class="muted small hidden" style="margin-top:6px">Subiendo archivo...</div>
+            </div>
+          </form>
+          <div id="task-detail-side" class="detail-side"></div>
+        </div>
+        <div class="modal-footer">
+          <button id="btn-delete-task" class="btn danger hidden">Eliminar tarea</button>
+          <button class="btn ghost" data-close-modal="task-modal">Cancelar</button>
+          <button id="btn-save-task" class="btn primary">Guardar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL: PROYECTO -->
+    <div id="project-modal" class="modal hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h2>Nuevo proyecto</h2>
+          <button class="icon-btn" data-close-modal="project-modal">✕</button>
+        </div>
+        <div class="modal-body">
+          <form id="project-form" class="form-grid compact">
+            <input id="project-id" type="hidden">
+            <div class="col-12"><label><span>Nombre del proyecto</span><input id="project-name" type="text" required></label></div>
+            <div class="col-12"><label><span>Descripción</span><textarea id="project-description" rows="3"></textarea></label></div>
+            <div class="col-4"><label><span>Inicio</span><input id="project-start" type="date"></label></div>
+            <div class="col-4"><label><span>Fin</span><input id="project-end" type="date"></label></div>
+            <div class="col-4"><label><span>Color</span><input id="project-color" type="color" value="#14532d"></label></div>
+          </form>
+        </div>
+        <div class="modal-footer">
+          <button class="btn ghost" data-close-modal="project-modal">Cancelar</button>
+          <button id="btn-save-project" class="btn primary">Guardar proyecto</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL: USUARIO -->
+    <div id="user-modal" class="modal hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h2>Gestión de usuario</h2>
+          <button class="icon-btn" data-close-modal="user-modal">✕</button>
+        </div>
+        <div class="modal-body">
+          <form id="user-form" class="form-grid compact">
+            <input id="user-id" type="hidden">
+            <div class="col-6"><label><span>Usuario</span><input id="user-username" type="text" required></label></div>
+            <div class="col-6"><label><span>Contraseña</span><input id="user-password" type="password"></label></div>
+            <div class="col-6"><label><span>Nombre visible</span><input id="user-display-name" type="text" required></label></div>
+            <div class="col-6"><label><span>Correo</span><input id="user-email" type="email"></label></div>
+            <div class="col-6">
+              <label><span>Rol</span>
+                <select id="user-role"><option>admin</option><option>manager</option><option>member</option></select>
+              </label>
+            </div>
+            <div class="col-6">
+              <label><span>Activo</span>
+                <select id="user-active"><option value="true">Sí</option><option value="false">No</option></select>
+              </label>
+            </div>
+          </form>
+        </div>
+        <div class="modal-footer">
+          <button class="btn ghost" data-close-modal="user-modal">Cancelar</button>
+          <button id="btn-save-user" class="btn primary">Guardar usuario</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL: DIGEST -->
+    <div id="digest-modal" class="modal hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h2>Vista previa del digest ejecutivo</h2>
+          <button class="icon-btn" data-close-modal="digest-modal">✕</button>
+        </div>
+        <div class="modal-body">
+          <pre id="digest-preview" class="digest-preview"></pre>
+        </div>
+        <div class="modal-footer">
+          <button class="btn ghost" data-close-modal="digest-modal">Cerrar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- PANEL FLOTANTE GANTT -->
+    <div id="gantt-float-panel" class="gantt-float-panel hidden">
+      <div class="gfp-header">
+        <div class="gfp-title" id="gfp-title">Editar tarea</div>
+        <button class="icon-btn" id="gfp-close">✕</button>
+      </div>
+      <div id="gfp-body"></div>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+    <div id="tooltip" class="tooltip hidden"></div>
+
+    <?!= include('Scripts'); ?>
+  </body>
+</html>

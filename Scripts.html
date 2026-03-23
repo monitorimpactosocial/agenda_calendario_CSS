@@ -1,0 +1,972 @@
+<script>
+const state = {
+  token: localStorage.getItem('paracel_token') || '',
+  app: null,
+  activeTab: 'dashboard',
+  filters: {
+    project: '',
+    status: '',
+    priority: '',
+    search: ''
+  },
+  calendar: {
+    month: new Date().getMonth(),
+    year: new Date().getFullYear()
+  }
+};
+
+function qs(id){ return document.getElementById(id); }
+function escapeHtml(v){
+  return String(v ?? '')
+    .replaceAll('&','&amp;')
+    .replaceAll('<','&lt;')
+    .replaceAll('>','&gt;')
+    .replaceAll('"','&quot;');
+}
+function showToast(message, isError=false){
+  const el = qs('toast');
+  el.className = 'toast';
+  el.style.background = isError ? '#991b1b' : '#0f172a';
+  el.textContent = message;
+  el.classList.remove('hidden');
+  setTimeout(() => el.classList.add('hidden'), 3200);
+}
+function showModal(id){ qs(id).classList.remove('hidden'); }
+function closeModal(id){ qs(id).classList.add('hidden'); }
+function api(fn, ...args){
+  return new Promise((resolve, reject) => {
+    const runner = google.script.run.withSuccessHandler(resolve).withFailureHandler(err => reject(new Error(err && err.message ? err.message : String(err))));
+    runner[fn](...args);
+  });
+}
+function fmtDate(iso){
+  if(!iso) return '';
+  const d = new Date(iso + 'T00:00:00');
+  return d.toLocaleDateString('es-PY', {year:'numeric', month:'2-digit', day:'2-digit'});
+}
+function todayIso(){
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth()+1).padStart(2,'0');
+  const day = String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+}
+function daysBetween(a,b){
+  if(!a || !b) return null;
+  const da = new Date(a+'T00:00:00');
+  const db = new Date(b+'T00:00:00');
+  return Math.round((db-da)/86400000);
+}
+function getFilteredTasks(){
+  if(!state.app) return [];
+  return state.app.tasks.filter(t => {
+    if(state.filters.project && t.project_id !== state.filters.project) return false;
+    if(state.filters.status && t.status !== state.filters.status) return false;
+    if(state.filters.priority && t.priority !== state.filters.priority) return false;
+    if(state.filters.search){
+      const needle = state.filters.search.toLowerCase();
+      const hay = [t.title,t.description,t.assignee_name,t.tags,t.task_id].join(' ').toLowerCase();
+      if(!hay.includes(needle)) return false;
+    }
+    return true;
+  });
+}
+function getProjectName(projectId){
+  const p = state.app.projects.find(x => x.project_id === projectId);
+  return p ? p.project_name : projectId;
+}
+function getProjectColor(projectId){
+  const p = state.app.projects.find(x => x.project_id === projectId);
+  return p ? (p.color || '#14532d') : '#14532d';
+}
+function getUserName(userId, fallback=''){
+  const u = state.app.users.find(x => x.user_id === userId);
+  return u ? u.display_name : fallback;
+}
+function normalizeClass(text){
+  return String(text || '').replace(/\s+/g, '-');
+}
+function taskTooltipHtml(task){
+  const prog   = Number(task.progress || 0);
+  const days   = task.days_to_due;
+  const daysTxt = days === null ? '' : days < 0 ? `⚠️ Atrasada ${Math.abs(days)} d` : days === 0 ? '🔴 Vence hoy' : `⏳ ${days} días restantes`;
+  const overdueSt = task.overdue ? '<div class="tooltip-row"><span class="tooltip-label">Situación</span><span class="tooltip-val" style="color:#f87171">🚨 ATRASADA</span></div>' : '';
+  const pathTxt = task.work_path ? `<div class="tooltip-row"><span class="tooltip-label">Ruta</span><span class="tooltip-val">${escapeHtml(task.work_path)}</span></div>` : '';
+  const urlTxt  = task.folder_url ? `<div class="tooltip-row"><span class="tooltip-label">Enlace</span><span class="tooltip-val"><a href="${escapeHtml(task.folder_url)}" target="_blank" style="color:#6ee7b7">Abrir carpeta ↗</a></span></div>` : '';
+  const hrTxt   = task.estimated_hours ? `<div class="tooltip-row"><span class="tooltip-label">Horas</span><span class="tooltip-val">${escapeHtml(String(task.actual_hours||0))}h reales / ${escapeHtml(String(task.estimated_hours))}h est.</span></div>` : '';
+  const tagsTxt = task.tags ? `<div class="tooltip-row"><span class="tooltip-label">Etiquetas</span><span class="tooltip-val">${escapeHtml(task.tags)}</span></div>` : '';
+  const desc    = task.description ? `<div class="tooltip-desc">${escapeHtml(task.description).slice(0,300)}</div>` : '';
+  return `
+    <div class="tooltip-title">${escapeHtml(task.title)}</div>
+    <div class="tooltip-row"><span class="tooltip-label">Tipo</span><span class="tooltip-val">${escapeHtml(task.type)}</span></div>
+    <div class="tooltip-row"><span class="tooltip-label">Proyecto</span><span class="tooltip-val">${escapeHtml(getProjectName(task.project_id))}</span></div>
+    <div class="tooltip-row"><span class="tooltip-label">Estado</span><span class="tooltip-val">${escapeHtml(task.status)}</span></div>
+    <div class="tooltip-row"><span class="tooltip-label">Prioridad</span><span class="tooltip-val">${escapeHtml(task.priority)}</span></div>
+    <div class="tooltip-row"><span class="tooltip-label">Inicio</span><span class="tooltip-val">${escapeHtml(task.start_date||'—')}</span></div>
+    <div class="tooltip-row"><span class="tooltip-label">Fin</span><span class="tooltip-val">${escapeHtml(task.due_date||'—')} ${daysTxt ? '· '+daysTxt : ''}</span></div>
+    <div class="tooltip-row"><span class="tooltip-label">Responsable</span><span class="tooltip-val">${escapeHtml(task.assignee_name||getUserName(task.assignee_user_id)||'Sin asignar')}</span></div>
+    <div class="tooltip-row"><span class="tooltip-label">Avance</span><span class="tooltip-val">${prog}% · ${task.duration_days||1} días</span></div>
+    <div class="tooltip-prog-wrap"><div class="tooltip-prog-bar" style="width:${prog}%"></div></div>
+    ${overdueSt}${hrTxt}${tagsTxt}${pathTxt}${urlTxt}${desc}
+  `;
+}
+function attachTooltip(targetSelector='[data-tooltip-task]'){
+  document.querySelectorAll(targetSelector).forEach(el => {
+    el.onmouseenter = ev => {
+      const taskId = el.getAttribute('data-tooltip-task');
+      const task = state.app.tasks.find(t => t.task_id === taskId);
+      if(!task) return;
+      const tip = qs('tooltip');
+      tip.innerHTML = taskTooltipHtml(task);
+      tip.classList.remove('hidden');
+      moveTooltip(ev);
+    };
+    el.onmousemove = moveTooltip;
+    el.onmouseleave = () => qs('tooltip').classList.add('hidden');
+  });
+}
+function moveTooltip(ev){
+  const tip = qs('tooltip');
+  tip.style.left = (ev.clientX + 16) + 'px';
+  tip.style.top = (ev.clientY + 16) + 'px';
+}
+function renderFilters(){
+  const projectSel = qs('filter-project');
+  const taskProjectSel = qs('task-project');
+  const options = ['<option value="">Todos</option>'].concat(state.app.projects.map(p => `<option value="${escapeHtml(p.project_id)}">${escapeHtml(p.project_name)}</option>`));
+  projectSel.innerHTML = options.join('');
+  projectSel.value = state.filters.project;
+
+  const taskProjectOptions = state.app.projects.map(p => `<option value="${escapeHtml(p.project_id)}">${escapeHtml(p.project_name)}</option>`).join('');
+  taskProjectSel.innerHTML = taskProjectOptions;
+
+  const assigneeOptions = ['<option value="">Sin asignar</option>'].concat(state.app.users.map(u => `<option value="${escapeHtml(u.user_id)}">${escapeHtml(u.display_name)}</option>`));
+  qs('task-assignee').innerHTML = assigneeOptions.join('');
+}
+function renderMessageBar(){
+  const d = state.app.dashboard;
+  const urgentTitles = d.top_urgent.slice(0,3).map(t => escapeHtml(t.title)).join(' · ');
+  const badge = d.urgent > 0 ? `<span class="urgent-badge">${d.urgent}</span>` : '';
+  qs('message-bar').innerHTML = `
+    ${badge}
+    <span><strong>${d.urgent}</strong> urgentes · <strong>${d.overdue}</strong> atrasadas · <strong>${d.due_today}</strong> vencen hoy · <strong>${d.blocked}</strong> bloqueadas${urgentTitles ? ' — ' + urgentTitles : ''}</span>
+  `;
+}
+function renderDashboard(){
+  const d = state.app.dashboard;
+  const total = d.tasks || 1;
+  qs('tab-dashboard').innerHTML = `
+    <div class="grid-cards">
+      ${kpiCard('Proyectos activos', d.projects, 'Portafolio accesible', (d.projects/10)*100)}
+      ${kpiCard('Tareas abiertas', d.open_tasks, 'Pendientes, en curso o bloqueadas', (d.open_tasks/total)*100)}
+      ${kpiCard('Tareas urgentes', d.urgent, 'Prioridad crítica o vencimiento cercano', (d.urgent/total)*100)}
+      ${kpiCard('Atrasadas', d.overdue, 'Requieren intervención inmediata', (d.overdue/total)*100)}
+      ${kpiCard('Bloqueadas', d.blocked, 'Riesgos operativos', (d.blocked/total)*100)}
+      ${kpiCard('Avance promedio', d.avg_progress + '%', 'Promedio general de progreso', d.avg_progress)}
+    </div>
+    <div class="dashboard-grid">
+      <div class="stack">
+        <div class="card">
+          <div class="timeline-title">Tareas más urgentes</div>
+          <div class="timeline-subtitle">Lista ejecutiva priorizada para gestión inmediata</div>
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr><th>Tarea</th><th>Proyecto</th><th>Estado</th><th>Prioridad</th><th>Fin</th><th>Resp.</th></tr></thead>
+              <tbody>
+                ${d.top_urgent.map(t => `
+                  <tr data-open-task="${escapeHtml(t.task_id)}">
+                    <td><span class="type-chip ${escapeHtml(t.type)}">${escapeHtml(t.type)}</span> ${escapeHtml(t.title)}</td>
+                    <td>${escapeHtml(getProjectName(t.project_id))}</td>
+                    <td><span class="badge status-${normalizeClass(t.status)}">${escapeHtml(t.status)}</span></td>
+                    <td><span class="badge priority-${normalizeClass(t.priority)}">${escapeHtml(t.priority)}</span></td>
+                    <td>${escapeHtml(t.due_date || '')}</td>
+                    <td>${escapeHtml(t.assignee_name || getUserName(t.assignee_user_id) || '')}</td>
+                  </tr>
+                `).join('') || '<tr><td colspan="6">Sin registros urgentes.</td></tr>'}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <div class="timeline-title">Actividad reciente</div>
+          <div class="timeline-subtitle">Eventos generados por usuarios y por el sistema</div>
+          <div class="activity-list">
+            ${state.app.activity.slice(-12).reverse().map(a => `
+              <div class="activity-item">
+                <div><strong>${escapeHtml(a.actor_name || 'Sistema')}</strong> · ${escapeHtml(a.action)}</div>
+                <div class="muted small">${escapeHtml(a.entity_type)} · ${escapeHtml(a.entity_id)}</div>
+                <div class="muted small">${escapeHtml(a.created_at)}</div>
+              </div>
+            `).join('') || '<div class="activity-item">Sin actividad reciente.</div>'}
+          </div>
+        </div>
+      </div>
+
+      <div class="stack">
+        <div class="card">
+          <div class="timeline-title">Carga por responsable</div>
+          <div class="timeline-subtitle">Tareas abiertas por integrante del equipo</div>
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr><th>Responsable</th><th>Abiertas</th><th>Urgentes</th></tr></thead>
+              <tbody>
+              ${renderResponsibilityRows()}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <div class="timeline-title">Resumen por proyecto</div>
+          <div class="timeline-subtitle">Estado agregado del portafolio</div>
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr><th>Proyecto</th><th>Tareas</th><th>Urgentes</th><th>Atrasadas</th><th>Avance medio</th></tr></thead>
+              <tbody>
+              ${renderProjectSummaryRows()}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  bindOpenTaskLinks();
+}
+function kpiCard(title, value, sub, pct){
+  const bar = pct !== undefined ? `<div class="kpi-bar-wrap"><div class="kpi-bar" style="width:${Math.min(100,pct)}%"></div></div>` : '';
+  return `<div class="card"><div class="kpi-title">${escapeHtml(title)}</div><div class="kpi-value">${escapeHtml(String(value))}</div><div class="kpi-sub">${escapeHtml(sub)}</div>${bar}</div>`;
+}
+function renderResponsibilityRows(){
+  const open = state.app.tasks.filter(t => !['Completada','Cancelada'].includes(t.status));
+  const map = {};
+  open.forEach(t => {
+    const name = t.assignee_name || getUserName(t.assignee_user_id, 'Sin asignar') || 'Sin asignar';
+    if(!map[name]) map[name] = {open:0, urgent:0};
+    map[name].open += 1;
+    if(t.urgent) map[name].urgent += 1;
+  });
+  const rows = Object.entries(map).sort((a,b) => b[1].urgent - a[1].urgent || b[1].open - a[1].open);
+  return rows.map(([name, m]) => `<tr><td>${escapeHtml(name)}</td><td>${m.open}</td><td>${m.urgent}</td></tr>`).join('') || '<tr><td colspan="3">Sin datos.</td></tr>';
+}
+function renderProjectSummaryRows(){
+  return state.app.projects.map(p => {
+    const tasks = state.app.tasks.filter(t => t.project_id === p.project_id);
+    const urgent = tasks.filter(t => t.urgent).length;
+    const overdue = tasks.filter(t => t.overdue).length;
+    const avg = tasks.length ? Math.round(tasks.reduce((a,t)=>a+Number(t.progress||0),0)/tasks.length) : 0;
+    return `<tr>
+      <td>${escapeHtml(p.project_name)}</td>
+      <td>${tasks.length}</td>
+      <td>${urgent}</td>
+      <td>${overdue}</td>
+      <td>${avg}%</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="5">Sin proyectos.</td></tr>';
+}
+function renderTimeline(){
+  const tasks = getFilteredTasks();
+  const target = qs('tab-timeline');
+  if(!tasks.length){
+    target.innerHTML = `<div class="card">No existen tareas que cumplan los filtros actuales.</div>`;
+    return;
+  }
+  const startMin = tasks.map(t => t.start_date || t.due_date || todayIso()).sort()[0];
+  const dueMax = tasks.map(t => t.due_date || t.start_date || todayIso()).sort().slice(-1)[0];
+  const span = Math.max(1, daysBetween(startMin, dueMax) + 1);
+  const months = [];
+  let cursor = new Date(startMin + 'T00:00:00');
+  const endDate = new Date(dueMax + 'T00:00:00');
+  let index = 0;
+  while(cursor <= endDate){
+    const startIndex = index;
+    const month = cursor.getMonth();
+    const year = cursor.getFullYear();
+    let days = 0;
+    while(cursor <= endDate && cursor.getMonth() === month && cursor.getFullYear() === year){
+      days += 1;
+      cursor.setDate(cursor.getDate()+1);
+      index += 1;
+    }
+    months.push({label:new Date(year, month, 1).toLocaleDateString('es-PY', {month:'short', year:'numeric'}), days});
+  }
+
+  let html = `
+    <div class="timeline-shell">
+      <div class="timeline-header">
+        <div class="timeline-title">Cronograma interactivo</div>
+        <div class="timeline-subtitle">Doble clic para editar, puntero para información ampliada, y control completo sobre responsables, adjuntos, rutas y dependencias.</div>
+      </div>
+      <div class="timeline-scroll">
+        <div class="timeline-grid" style="--timeline-day-width:28px">
+          <div class="timeline-months">
+            <div class="timeline-label-cell"><strong>Estructura del proyecto</strong></div>
+            <div class="timeline-cells">
+              ${months.map(m => `<div class="month-cell" style="grid-column: span ${m.days};">${escapeHtml(m.label)}</div>`).join('')}
+            </div>
+          </div>
+          <div class="timeline-days">
+            <div class="timeline-label-cell"><strong>Intervalo diario</strong></div>
+            <div class="timeline-cells">
+              ${Array.from({length: span}, (_,i) => {
+                const d = new Date(startMin + 'T00:00:00'); d.setDate(d.getDate()+i);
+                return `<div class="day-cell">${String(d.getDate()).padStart(2,'0')}</div>`;
+              }).join('')}
+            </div>
+          </div>
+  `;
+  tasks.forEach(task => {
+    const offset = Math.max(0, daysBetween(startMin, task.start_date || task.due_date || startMin));
+    const length = Math.max(1, daysBetween(task.start_date || task.due_date || startMin, task.due_date || task.start_date || startMin) + 1);
+    const left  = offset * 28 + 4;
+    const width = Math.max(36, length * 28 - 8);
+    const isHito = task.type === 'Hito';
+    const blockType = (task.type === 'Tema' || task.type === 'Subtema' || task.type === 'Hito') ? `type-${task.type}` : `priority-${task.priority}`;
+    html += `
+      <div class="timeline-row row-${escapeHtml(task.type)}">
+        <div class="timeline-label-cell">
+          <div class="timeline-label theme-${escapeHtml(task.type)}" data-open-task="${escapeHtml(task.task_id)}">
+            <div class="title">${escapeHtml(task.title)}</div>
+            <div class="meta">${escapeHtml(getProjectName(task.project_id))} · ${escapeHtml(task.status)} · ${escapeHtml(task.assignee_name || getUserName(task.assignee_user_id) || 'Sin asignar')}</div>
+          </div>
+        </div>
+        <div class="timeline-cells">
+          ${Array.from({length: span}, () => '<div class="day-cell"></div>').join('')}
+          <div class="timeline-block ${blockType} status-${escapeHtml(task.status)}"
+            data-open-task="${escapeHtml(task.task_id)}"
+            data-tooltip-task="${escapeHtml(task.task_id)}"
+            data-dblclick-task="${escapeHtml(task.task_id)}"
+            style="left:${left}px;width:${isHito ? 28 : width}px;border-left:5px solid ${getProjectColor(task.project_id)};">
+            <div class="block-title">${escapeHtml(task.title)}</div>
+            ${!isHito ? `<div class="block-sub">${escapeHtml(task.start_date||'')} → ${escapeHtml(task.due_date||'')} · ${task.progress}%</div>` : ''}
+          </div>
+        </div>
+      </div>
+    `;
+  });
+  html += `</div></div></div>`;
+  target.innerHTML = html;
+  bindOpenTaskLinks();
+  attachTooltip();
+  attachGanttDblClick();
+}
+function attachGanttDblClick(){
+  document.querySelectorAll('[data-dblclick-task]').forEach(el => {
+    el.ondblclick = ev => {
+      ev.stopPropagation();
+      ev.preventDefault();
+      const taskId = el.getAttribute('data-dblclick-task');
+      openGanttFloatPanel(taskId, ev.clientX, ev.clientY);
+    };
+  });
+}
+async function openGanttFloatPanel(taskId, cx, cy){
+  try {
+    const detail = await api('getTaskDetail', state.token, taskId);
+    const t = detail.task;
+    const panel = qs('gantt-float-panel');
+    qs('gfp-title').textContent = t.title;
+    qs('gfp-body').innerHTML = `
+      <div style="display:grid;gap:8px;font-size:13px">
+        <div><strong>Estado:</strong> ${escapeHtml(t.status)} | <strong>Prioridad:</strong> ${escapeHtml(t.priority)}</div>
+        <div><strong>Tipo:</strong> ${escapeHtml(t.type)} | <strong>Avance:</strong> ${t.progress}%</div>
+        <div style="height:6px;background:#e2e8f0;border-radius:99px;overflow:hidden"><div style="height:100%;background:#15803d;width:${t.progress}%"></div></div>
+        <div><strong>Inicio:</strong> ${escapeHtml(t.start_date||'—')} | <strong>Fin:</strong> ${escapeHtml(t.due_date||'—')}</div>
+        <div><strong>Responsable:</strong> ${escapeHtml(t.assignee_name||getUserName(t.assignee_user_id)||'Sin asignar')}</div>
+        ${t.work_path ? `<div><strong>Ruta:</strong> <span style="color:#15803d">${escapeHtml(t.work_path)}</span></div>` : ''}
+        ${t.folder_url ? `<div><a href="${escapeHtml(t.folder_url)}" target="_blank">Abrir carpeta ↗</a></div>` : ''}
+        ${t.description ? `<div style="margin-top:6px;color:#4d6658;font-size:12px">${escapeHtml(t.description).slice(0,300)}</div>` : ''}
+        <div style="margin-top:10px;display:flex;gap:8px">
+          <button class="btn primary" style="flex:1" onclick="openTask('${escapeHtml(taskId)}');qs('gantt-float-panel').classList.add('hidden')">Editar completo</button>
+          <button class="btn ghost" onclick="qs('gantt-float-panel').classList.add('hidden')">Cerrar</button>
+        </div>
+      </div>
+    `;
+    const pw = 380, ph = 320;
+    const sx = Math.min(cx + 10, window.innerWidth - pw - 10);
+    const sy = Math.min(cy + 10, window.innerHeight - ph - 10);
+    panel.style.left = sx + 'px';
+    panel.style.top  = sy + 'px';
+    panel.classList.remove('hidden');
+  } catch(err){ showToast(err.message, true); }
+}
+function renderCalendar(){
+  const target = qs('tab-calendar');
+  const month = state.calendar.month;
+  const year = state.calendar.year;
+  const first = new Date(year, month, 1);
+  const startWeekday = (first.getDay() + 6) % 7;
+  const daysInMonth = new Date(year, month+1, 0).getDate();
+  const prevDays = new Date(year, month, 0).getDate();
+  const tasks = getFilteredTasks();
+  const cells = [];
+  for(let i=0;i<42;i++){
+    let dayNum, cellDate, muted=false;
+    if(i < startWeekday){
+      dayNum = prevDays - startWeekday + i + 1;
+      const d = new Date(year, month-1, dayNum);
+      cellDate = d.toISOString().slice(0,10);
+      muted = true;
+    } else if(i >= startWeekday + daysInMonth){
+      dayNum = i - startWeekday - daysInMonth + 1;
+      const d = new Date(year, month+1, dayNum);
+      cellDate = d.toISOString().slice(0,10);
+      muted = true;
+    } else {
+      dayNum = i - startWeekday + 1;
+      const d = new Date(year, month, dayNum);
+      cellDate = d.toISOString().slice(0,10);
+    }
+    const dayTasks = tasks.filter(t => {
+      const s = t.start_date || t.due_date || cellDate;
+      const e = t.due_date || t.start_date || cellDate;
+      return s <= cellDate && e >= cellDate;
+    }).slice(0,4);
+    const isToday = cellDate === todayIso();
+    cells.push(`
+      <div class="day-card ${isToday ? 'today' : ''}" style="${muted ? 'opacity:.45' : ''}">
+        <div class="day-number">${dayNum}</div>
+        ${dayTasks.map(t => `<span class="day-chip priority-${escapeHtml(t.priority)}" data-open-task="${escapeHtml(t.task_id)}" data-tooltip-task="${escapeHtml(t.task_id)}">${escapeHtml(t.title)}</span>`).join('')}
+      </div>
+    `);
+  }
+
+  const monthLabel = new Date(year, month, 1).toLocaleDateString('es-PY', {month:'long', year:'numeric'});
+  const agenda = tasks
+    .filter(t => {
+      const s = t.start_date || t.due_date || '';
+      return s.startsWith(`${year}-${String(month+1).padStart(2,'0')}`);
+    })
+    .sort((a,b) => (a.start_date||'').localeCompare(b.start_date||''))
+    .slice(0, 20);
+
+  target.innerHTML = `
+    <div class="calendar-shell">
+      <div class="calendar-month">
+        <div class="calendar-head">
+          <div>
+            <div class="timeline-title">Calendario del proyecto</div>
+            <div class="timeline-subtitle">Vista mensual vinculada al cronograma y a los proyectos accesibles</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn ghost" id="btn-prev-month">◀</button>
+            <strong style="text-transform:capitalize">${escapeHtml(monthLabel)}</strong>
+            <button class="btn ghost" id="btn-next-month">▶</button>
+          </div>
+        </div>
+        <div class="calendar-grid">
+          ${['L','M','X','J','V','S','D'].map(d => `<div class="weekday">${d}</div>`).join('')}
+          ${cells.join('')}
+        </div>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <div class="timeline-title">Agenda del mes</div>
+          <div class="timeline-subtitle">Tareas iniciadas durante el mes seleccionado</div>
+          <div class="agenda-list">
+            ${agenda.map(t => `
+              <div class="agenda-item" data-open-task="${escapeHtml(t.task_id)}" data-tooltip-task="${escapeHtml(t.task_id)}">
+                <div><strong>${escapeHtml(t.title)}</strong></div>
+                <div class="muted small">${escapeHtml(getProjectName(t.project_id))} · ${escapeHtml(t.start_date || '')} a ${escapeHtml(t.due_date || '')}</div>
+                <div class="muted small">${escapeHtml(t.assignee_name || getUserName(t.assignee_user_id) || 'Sin asignar')} · ${escapeHtml(t.status)} · ${escapeHtml(t.priority)}</div>
+              </div>
+            `).join('') || '<div class="agenda-item">Sin eventos en el mes.</div>'}
+          </div>
+        </div>
+        <div class="card">
+          <div class="timeline-title">Utilidad práctica</div>
+          <div class="timeline-subtitle">La vista calendario facilita reuniones de seguimiento, revisión de hitos, coordinación entre equipos y control de vencimientos.</div>
+          <ul class="muted" style="margin:10px 0 0 18px;line-height:1.6">
+            <li>Las tareas pueden abrirse para edición con doble clic desde cronograma y clic desde calendario.</li>
+            <li>Los proyectos se segregan por membresía, por lo que cada equipo visualiza solo lo que le corresponde.</li>
+            <li>Las fotos y documentos adjuntos quedan archivados en Drive y vinculados a cada tarea.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  `;
+  qs('btn-prev-month').onclick = () => {
+    state.calendar.month -= 1;
+    if(state.calendar.month < 0){ state.calendar.month = 11; state.calendar.year -= 1; }
+    renderCalendar();
+  };
+  qs('btn-next-month').onclick = () => {
+    state.calendar.month += 1;
+    if(state.calendar.month > 11){ state.calendar.month = 0; state.calendar.year += 1; }
+    renderCalendar();
+  };
+  bindOpenTaskLinks();
+  attachTooltip();
+}
+function renderTeam(){
+  const target = qs('tab-team');
+  const memberships = state.app.memberships;
+  const grouped = {};
+  memberships.forEach(m => {
+    if(!grouped[m.project_id]) grouped[m.project_id] = [];
+    grouped[m.project_id].push(m);
+  });
+  // Kanban
+  const allTasks = state.app.tasks;
+  const kanbanCols = [
+    {label:'📋 Pendiente', statuses:['Pendiente']},
+    {label:'🔵 En curso',  statuses:['En curso','Bloqueada','Atrasada']},
+    {label:'✅ Completada',statuses:['Completada','Cancelada']}
+  ];
+  const kanbanHtml = `
+    <div class="card" style="grid-column:span 2">
+      <div class="timeline-title">Tablero Kanban del proyecto</div>
+      <div class="timeline-subtitle">Vista de columnas por estado para todos los proyectos accesibles</div>
+      <div class="kanban-wrap">
+        ${kanbanCols.map(col => `
+          <div class="kanban-col">
+            <div class="kanban-col-title">${col.label} <span style="font-weight:400;color:#4d6658">(${allTasks.filter(t=>col.statuses.includes(t.status)).length})</span></div>
+            ${allTasks.filter(t=>col.statuses.includes(t.status)).slice(0,20).map(t => `
+              <div class="kanban-card" data-open-task="${escapeHtml(t.task_id)}">
+                <div class="k-title">${escapeHtml(t.title)}</div>
+                <div class="k-meta">${escapeHtml(getProjectName(t.project_id))} · ${escapeHtml(t.assignee_name||getUserName(t.assignee_user_id)||'Sin asignar')}</div>
+                <div style="height:4px;background:#e2e8f0;border-radius:99px;overflow:hidden;margin-top:6px"><div style="height:100%;background:#15803d;width:${t.progress||0}%"></div></div>
+              </div>
+            `).join('') || '<div class="muted small" style="padding:8px">Sin tareas.</div>'}
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+  target.innerHTML = `
+    <div class="team-grid">
+      ${kanbanHtml}
+      <div class="card">
+        <div class="timeline-title">Equipos por proyecto</div>
+        <div class="timeline-subtitle">Los usuarios comparten tareas y seguimiento cuando forman parte del mismo proyecto</div>
+        <div class="activity-list">
+          ${state.app.projects.map(p => `
+            <div class="activity-item">
+              <div style="display:flex;justify-content:space-between;gap:8px;align-items:center">
+                <div>
+                  <div><strong>${escapeHtml(p.project_name)}</strong></div>
+                  <div class="muted small">${escapeHtml(p.description || '')}</div>
+                </div>
+                <button class="btn ghost" data-open-membership="${escapeHtml(p.project_id)}">Agregar integrante</button>
+              </div>
+              <div style="margin-top:10px">
+                ${(grouped[p.project_id] || []).map(m => `
+                  <span class="badge">${escapeHtml(getUserName(m.user_id))} · ${escapeHtml(m.role)}</span>
+                `).join('') || '<span class="muted small">Sin integrantes.</span>'}
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+      <div class="card">
+        <div class="timeline-title">Carga operativa por usuario</div>
+        <div class="timeline-subtitle">Seguimiento cruzado entre responsables dentro del mismo proyecto</div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th>Usuario</th><th>Abiertas</th><th>Urgentes</th><th>Completadas</th></tr></thead>
+            <tbody>
+              ${state.app.users.map(u => {
+                const all = state.app.tasks.filter(t => t.assignee_user_id === u.user_id || (!t.assignee_user_id && (t.assignee_name||'').toLowerCase() === (u.display_name||'').toLowerCase()));
+                const open = all.filter(t => !['Completada','Cancelada'].includes(t.status)).length;
+                const urgent = all.filter(t => t.urgent).length;
+                const done = all.filter(t => t.status === 'Completada').length;
+                return `<tr><td>${escapeHtml(u.display_name)}</td><td>${open}</td><td>${urgent}</td><td>${done}</td></tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+  document.querySelectorAll('[data-open-membership]').forEach(btn => {
+    btn.onclick = async () => {
+      const projectId = btn.getAttribute('data-open-membership');
+      const options = state.app.users.map(u => `${u.user_id} | ${u.display_name}`).join('\n');
+      const raw = prompt(`Ingrese el user_id a incorporar al proyecto ${getProjectName(projectId)}\n\n${options}`);
+      if(!raw) return;
+      const userId = raw.split('|')[0].trim();
+      const role = prompt('Rol dentro del proyecto (admin, manager, member)', 'member') || 'member';
+      try{
+        await api('saveMembership', state.token, {project_id: projectId, user_id: userId, role});
+        await refreshData();
+        showToast('Integrante agregado al proyecto.');
+      }catch(err){ showToast(err.message, true); }
+    };
+  });
+}
+function renderFiles(){
+  const target = qs('tab-files');
+  const attachments = state.app.attachments.slice().reverse();
+  target.innerHTML = `
+    <div class="files-grid">
+      <div class="card">
+        <div class="timeline-title">Centro documental</div>
+        <div class="timeline-subtitle">Adjuntos cargados desde la aplicación, incluyendo fotos capturadas desde el dispositivo</div>
+        <div class="attachment-list">
+          ${attachments.map(a => `
+            <div class="attachment-item">
+              <div><strong>${escapeHtml(a.file_name)}</strong></div>
+              <div class="muted small">${escapeHtml(a.mime_type || '')} · ${escapeHtml(a.uploaded_by || '')} · ${escapeHtml(a.uploaded_at || '')}</div>
+              <div class="muted small">Tarea: ${escapeHtml((state.app.tasks.find(t => t.task_id === a.task_id) || {}).title || a.task_id)}</div>
+              <div style="margin-top:8px"><a href="${escapeHtml(a.file_url)}" target="_blank">Abrir en Drive</a></div>
+            </div>
+          `).join('') || '<div class="attachment-item">No existen adjuntos cargados todavía.</div>'}
+        </div>
+      </div>
+      <div class="card">
+        <div class="timeline-title">Comentarios recientes</div>
+        <div class="timeline-subtitle">Bitácora breve de observaciones por tarea</div>
+        <div class="comment-list">
+          ${state.app.comments.slice().reverse().slice(0, 30).map(c => `
+            <div class="comment-item">
+              <div><strong>${escapeHtml(c.author_name)}</strong> · ${escapeHtml(c.created_at)}</div>
+              <div class="muted small">${escapeHtml((state.app.tasks.find(t => t.task_id === c.task_id) || {}).title || c.task_id)}</div>
+              <div style="margin-top:6px">${escapeHtml(c.message)}</div>
+            </div>
+          `).join('') || '<div class="comment-item">Sin comentarios registrados.</div>'}
+        </div>
+      </div>
+    </div>
+  `;
+}
+function renderSettings(){
+  const target = qs('tab-settings');
+  const isAdmin = state.app.session.role === 'admin';
+  target.innerHTML = `
+    <div class="settings-grid">
+      <div class="card">
+        <div class="timeline-title">Proyectos</div>
+        <div class="timeline-subtitle">Alta y mantenimiento del portafolio</div>
+        <div style="margin:12px 0 16px">
+          <button class="btn primary" id="btn-open-project-modal">Nuevo proyecto</button>
+        </div>
+        <div class="activity-list">
+          ${state.app.projects.map(p => `
+            <div class="activity-item">
+              <div style="display:flex;justify-content:space-between;gap:8px">
+                <div>
+                  <div><strong>${escapeHtml(p.project_name)}</strong></div>
+                  <div class="muted small">${escapeHtml(p.description || '')}</div>
+                  <div class="muted small">${escapeHtml(p.start_date || '')} a ${escapeHtml(p.end_date || '')}</div>
+                </div>
+                <div><span class="badge">${escapeHtml(p.status || 'Activo')}</span></div>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+      <div class="card">
+        <div class="timeline-title">Usuarios</div>
+        <div class="timeline-subtitle">Gestión de acceso y autenticación interna de la aplicación</div>
+        <div style="margin:12px 0 16px">
+          ${isAdmin ? '<button class="btn primary" id="btn-open-user-modal">Nuevo usuario</button>' : '<div class="muted small">Solo el administrador puede crear o editar usuarios.</div>'}
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th>Usuario</th><th>Nombre</th><th>Rol</th><th>Activo</th></tr></thead>
+            <tbody>
+              ${state.app.users.map(u => `
+                <tr>
+                  <td>${escapeHtml(u.username)}</td>
+                  <td>${escapeHtml(u.display_name)}</td>
+                  <td>${escapeHtml(u.role)}</td>
+                  <td>${u.active === false || String(u.active).toUpperCase() === 'FALSE' ? 'No' : 'Sí'}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+  const btnProject = qs('btn-open-project-modal');
+  if(btnProject) btnProject.onclick = () => showModal('project-modal');
+  const btnUser = qs('btn-open-user-modal');
+  if(btnUser) btnUser.onclick = () => showModal('user-modal');
+}
+function bindOpenTaskLinks(){
+  document.querySelectorAll('[data-open-task]').forEach(el => {
+    el.onclick = async () => openTask(el.getAttribute('data-open-task'));
+    el.ondblclick = async ev => { ev.preventDefault(); await openTask(el.getAttribute('data-open-task')); };
+  });
+}
+async function openTask(taskId){
+  try{
+    const detail = await api('getTaskDetail', state.token, taskId);
+    const t = detail.task;
+    qs('task-modal-title').textContent = `Editar tarea · ${t.title}`;
+    qs('task-id').value = t.task_id;
+    qs('task-project').value = t.project_id;
+    qs('task-type').value = t.type || 'Actividad';
+    qs('task-status').value = t.status || 'Pendiente';
+    qs('task-priority').value = t.priority || 'Media';
+    qs('task-title').value = t.title || '';
+    qs('task-start').value = t.start_date || '';
+    qs('task-due').value = t.due_date || '';
+    qs('task-progress').value = t.progress || 0;
+    qs('task-work-path').value = t.work_path || '';
+    qs('task-folder-url').value = t.folder_url || '';
+    qs('task-description').value = t.description || '';
+    qs('task-tags').value = t.tags || '';
+    qs('task-estimated-hours').value = t.estimated_hours || '';
+    qs('task-actual-hours').value = t.actual_hours || '';
+    qs('task-dependencies').value = t.dependency_ids || '';
+    qs('task-comment').value = '';
+    fillTaskParentOptions(t.project_id, t.task_id);
+    qs('task-parent').value = t.parent_id || '';
+    qs('task-assignee').value = t.assignee_user_id || '';
+    qs('btn-delete-task').classList.remove('hidden');
+
+    qs('task-detail-side').innerHTML = `
+      <div class="timeline-title">Detalle operativo</div>
+      <div class="timeline-subtitle">Información ampliada, adjuntos y comentarios</div>
+      <div style="margin-top:12px" class="attachment-list">
+        ${(detail.attachments || []).map(a => `
+          <div class="attachment-item">
+            <div><strong>${escapeHtml(a.file_name)}</strong></div>
+            <div class="muted small">${escapeHtml(a.mime_type || '')} · ${escapeHtml(a.uploaded_by || '')}</div>
+            <div style="margin-top:8px"><a href="${escapeHtml(a.file_url)}" target="_blank">Abrir en Drive</a></div>
+          </div>
+        `).join('') || '<div class="attachment-item">Sin adjuntos.</div>'}
+      </div>
+      <div style="margin-top:14px" class="comment-list">
+        ${(detail.comments || []).slice().reverse().map(c => `
+          <div class="comment-item">
+            <div><strong>${escapeHtml(c.author_name)}</strong> · ${escapeHtml(c.created_at)}</div>
+            <div style="margin-top:6px">${escapeHtml(c.message)}</div>
+          </div>
+        `).join('') || '<div class="comment-item">Sin comentarios.</div>'}
+      </div>
+    `;
+    showModal('task-modal');
+  }catch(err){ showToast(err.message, true); }
+}
+function fillTaskParentOptions(projectId, currentTaskId=''){
+  const options = ['<option value="">Sin padre</option>']
+    .concat(state.app.tasks
+      .filter(t => t.project_id === projectId && t.task_id !== currentTaskId)
+      .map(t => `<option value="${escapeHtml(t.task_id)}">${escapeHtml(t.title)} (${escapeHtml(t.type)})</option>`));
+  qs('task-parent').innerHTML = options.join('');
+}
+function resetTaskForm(){
+  qs('task-form').reset();
+  qs('task-id').value = '';
+  qs('task-modal-title').textContent = 'Nueva tarea';
+  qs('btn-delete-task').classList.add('hidden');
+  qs('task-detail-side').innerHTML = `
+    <div class="timeline-title">Edición operativa</div>
+    <div class="timeline-subtitle">Aquí aparecerán los adjuntos y comentarios una vez que la tarea haya sido creada.</div>
+  `;
+  const projectId = qs('task-project').value || (state.app.projects[0] ? state.app.projects[0].project_id : '');
+  if(projectId) fillTaskParentOptions(projectId);
+}
+async function saveTaskFromForm(){
+  try{
+    const taskId = qs('task-id').value;
+    const assigneeUserId = qs('task-assignee').value || '';
+    const assigneeName = assigneeUserId ? (state.app.users.find(u => u.user_id === assigneeUserId) || {}).display_name || '' : '';
+    const payload = {
+      task_id: taskId || '',
+      project_id: qs('task-project').value,
+      type: qs('task-type').value,
+      status: qs('task-status').value,
+      priority: qs('task-priority').value,
+      title: qs('task-title').value,
+      parent_id: qs('task-parent').value,
+      dependency_ids: qs('task-dependencies').value,
+      start_date: qs('task-start').value,
+      due_date: qs('task-due').value,
+      progress: Number(qs('task-progress').value || 0),
+      assignee_user_id: assigneeUserId,
+      assignee_name: assigneeName,
+      work_path: qs('task-work-path').value,
+      folder_url: qs('task-folder-url').value,
+      description: qs('task-description').value,
+      tags: qs('task-tags').value,
+      estimated_hours: qs('task-estimated-hours').value,
+      actual_hours: qs('task-actual-hours').value,
+      comment_message: qs('task-comment').value
+    };
+    const saved = await api('saveTask', state.token, payload);
+
+    const fileInput = qs('task-upload');
+    if(fileInput.files && fileInput.files[0]){
+      const f = fileInput.files[0];
+      const b64 = await fileToBase64(f);
+      await api('uploadAttachment', state.token, saved.task_id || saved.taskId || saved.task_id || payload.task_id || saved.task_id, f.name, f.type, b64);
+    }
+
+    closeModal('task-modal');
+    await refreshData();
+    showToast(taskId ? 'Tarea actualizada.' : 'Tarea creada.');
+  }catch(err){ showToast(err.message, true); }
+}
+function fileToBase64(file){
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const res = String(ev.target.result || '');
+      // Mostrar preview si es imagen
+      if(file.type.startsWith('image/')){
+        const prev = qs('upload-preview');
+        prev.src = ev.target.result;
+        prev.style.display = 'block';
+      }
+      resolve(res.split(',')[1] || '');
+    };
+    reader.onerror = () => reject(new Error('No se pudo leer el archivo.'));
+    reader.readAsDataURL(file);
+  });
+}
+async function deleteCurrentTask(){
+  const taskId = qs('task-id').value;
+  if(!taskId) return;
+  if(!confirm('¿Desea eliminar la tarea seleccionada y sus descendientes?')) return;
+  try{
+    await api('deleteTask', state.token, taskId);
+    closeModal('task-modal');
+    await refreshData();
+    showToast('Tarea eliminada.');
+  }catch(err){ showToast(err.message, true); }
+}
+async function saveProjectFromForm(){
+  try{
+    const payload = {
+      project_id: qs('project-id').value || '',
+      project_name: qs('project-name').value,
+      description: qs('project-description').value,
+      start_date: qs('project-start').value,
+      end_date: qs('project-end').value,
+      color: qs('project-color').value
+    };
+    await api('saveProject', state.token, payload);
+    closeModal('project-modal');
+    qs('project-form').reset();
+    await refreshData();
+    showToast('Proyecto guardado.');
+  }catch(err){ showToast(err.message, true); }
+}
+async function saveUserFromForm(){
+  try{
+    const payload = {
+      user_id: qs('user-id').value || '',
+      username: qs('user-username').value,
+      password: qs('user-password').value,
+      display_name: qs('user-display-name').value,
+      email: qs('user-email').value,
+      role: qs('user-role').value,
+      active: qs('user-active').value === 'true'
+    };
+    await api('saveUser', state.token, payload);
+    closeModal('user-modal');
+    qs('user-form').reset();
+    await refreshData();
+    showToast('Usuario guardado.');
+  }catch(err){ showToast(err.message, true); }
+}
+async function previewDigest(){
+  try{
+    const digest = await api('getDigestPreview', state.token);
+    qs('digest-preview').textContent = digest.text;
+    showModal('digest-modal');
+  }catch(err){ showToast(err.message, true); }
+}
+function applySidebarFilters(){
+  state.filters.project = qs('filter-project').value;
+  state.filters.status = qs('filter-status').value;
+  state.filters.priority = qs('filter-priority').value;
+  state.filters.search = qs('filter-search').value.trim();
+  renderActiveTab();
+}
+function renderActiveTab(){
+  document.querySelectorAll('.tab-section').forEach(sec => sec.classList.remove('active'));
+  qs('tab-' + state.activeTab).classList.add('active');
+  document.querySelectorAll('.sidebar .nav-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === state.activeTab));
+  if(state.activeTab === 'dashboard') renderDashboard();
+  if(state.activeTab === 'timeline') renderTimeline();
+  if(state.activeTab === 'calendar') renderCalendar();
+  if(state.activeTab === 'team') renderTeam();
+  if(state.activeTab === 'files') renderFiles();
+  if(state.activeTab === 'settings') renderSettings();
+}
+async function refreshData(){
+  try{
+    state.app = await api('getBootstrap', state.token);
+    localStorage.setItem('paracel_token', state.token);
+    qs('session-name').textContent = state.app.session.display_name;
+    qs('session-role').textContent = state.app.session.role;
+    renderFilters();
+    renderMessageBar();
+    renderActiveTab();
+  }catch(err){
+    showToast(err.message, true);
+    logoutLocal();
+  }
+}
+function logoutLocal(){
+  localStorage.removeItem('paracel_token');
+  state.token = '';
+  state.app = null;
+  qs('main-screen').classList.add('hidden');
+  qs('login-screen').classList.remove('hidden');
+}
+async function tryAutoSession(){
+  if(!state.token) return;
+  try{
+    await refreshData();
+    qs('login-screen').classList.add('hidden');
+    qs('main-screen').classList.remove('hidden');
+  }catch(err){
+    logoutLocal();
+  }
+}
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('[data-close-modal]').forEach(btn => btn.onclick = () => closeModal(btn.dataset.closeModal));
+
+  qs('login-form').onsubmit = async ev => {
+    ev.preventDefault();
+    qs('login-error').classList.add('hidden');
+    try{
+      const res = await api('login', qs('login-username').value, qs('login-password').value);
+      state.token = res.token;
+      localStorage.setItem('paracel_token', state.token);
+      qs('login-screen').classList.add('hidden');
+      qs('main-screen').classList.remove('hidden');
+      await refreshData();
+      showToast('Sesión iniciada correctamente.');
+    }catch(err){
+      qs('login-error').textContent = err.message;
+      qs('login-error').classList.remove('hidden');
+    }
+  };
+
+  document.querySelectorAll('.sidebar .nav-btn').forEach(btn => {
+    btn.onclick = () => { state.activeTab = btn.dataset.tab; renderActiveTab(); };
+  });
+
+  qs('filter-project').onchange = applySidebarFilters;
+  qs('filter-status').onchange = applySidebarFilters;
+  qs('filter-priority').onchange = applySidebarFilters;
+  qs('filter-search').oninput = applySidebarFilters;
+
+  qs('btn-refresh').onclick = refreshData;
+  qs('btn-logout').onclick = async () => {
+    try{ if(state.token) await api('logout', state.token); } catch(err){}
+    logoutLocal();
+  };
+  qs('btn-new-task').onclick = () => {
+    resetTaskForm();
+    const projectId = qs('filter-project').value || (state.app.projects[0] ? state.app.projects[0].project_id : '');
+    qs('task-project').value = projectId;
+    fillTaskParentOptions(projectId);
+    showModal('task-modal');
+  };
+  qs('task-project').onchange = () => fillTaskParentOptions(qs('task-project').value, qs('task-id').value);
+  qs('btn-save-task').onclick = saveTaskFromForm;
+  qs('btn-delete-task').onclick = deleteCurrentTask;
+  qs('btn-save-project').onclick = saveProjectFromForm;
+  qs('btn-save-user').onclick = saveUserFromForm;
+  qs('btn-preview-digest').onclick = previewDigest;
+
+  tryAutoSession();
+});
+</script>
