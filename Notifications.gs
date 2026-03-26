@@ -1,14 +1,17 @@
 function sendWeekdayUrgentDigest() {
-  const now = new Date();
-  const day = Number(Utilities.formatDate(now, APP_CONFIG.TIMEZONE, 'u'));
-  if (day >= 6) {
-    return {ok: true, skipped: true, reason: 'Fin de semana'};
-  }
+  var now = new Date();
+  var day = Number(Utilities.formatDate(now, APP_CONFIG.TIMEZONE, 'u'));
+  if (day >= 6) return {ok: true, skipped: true, reason: 'Fin de semana'};
 
-  const digest = buildUrgentDigest_();
-  GmailApp.sendEmail(APP_CONFIG.DIGEST_RECIPIENT, digest.subject, digest.text);
+  var digest = buildUrgentDigest_();
+  GmailApp.sendEmail(APP_CONFIG.DIGEST_RECIPIENT, digest.subject, digest.text, {
+    htmlBody: digest.html,
+    name: APP_CONFIG.APP_NAME
+  });
+
   appendRow_('activity_log', HEADERS.activity_log, {
     log_id: toId_('log'),
+    project_id: '',
     entity_type: 'notification',
     entity_id: 'weekday_digest',
     action: 'send_email',

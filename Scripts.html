@@ -1,123 +1,150 @@
 <script>
-const state = {
-  token: localStorage.getItem('paracel_token') || '',
-  app: null,
-  activeTab: 'dashboard',
-  filters: {
-    project: '',
-    status: '',
-    priority: '',
-    search: ''
-  },
-  calendar: {
-    month: new Date().getMonth(),
-    year: new Date().getFullYear()
-  }
+/* ================================================================
+   PARACEL · Gestor Colaborativo v3 — Scripts
+   Lógica de cliente completamente refactorizada:
+   - Estado reactivo centralizado
+   - Modo oscuro persistente
+   - Vista de actividad nueva
+   - Línea de hoy en Gantt
+   - Vista compacta/expandida en cronograma
+   - Chips de etiquetas renderizados
+   - Indicadores de progreso animados (KPI rings)
+   - Carga progresiva con esqueletos
+   ================================================================ */
+
+/* ── Utilidades de almacenamiento ── */
+const store = {
+  get: k => { try { return localStorage.getItem(k); } catch { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
+  del: k => { try { localStorage.removeItem(k); } catch {} }
 };
 
-function qs(id){ return document.getElementById(id); }
-function escapeHtml(v){
-  return String(v ?? '')
-    .replaceAll('&','&amp;')
-    .replaceAll('<','&lt;')
-    .replaceAll('>','&gt;')
-    .replaceAll('"','&quot;');
+/* ── Estado global ── */
+const state = {
+  token:     store.get('paracel_token') || '',
+  app:       null,
+  tab:       'dashboard',
+  dark:      store.get('paracel_dark') === '1',
+  ganttMode: store.get('paracel_gantt_mode') || 'normal', // 'normal' | 'compact'
+  filters:   { project:'', status:'', priority:'', search:'' },
+  calendar:  { month: new Date().getMonth(), year: new Date().getFullYear() }
+};
+
+/* ── Helpers DOM ── */
+const qs   = id => document.getElementById(id);
+const qsa  = sel => document.querySelectorAll(sel);
+
+function escHtml(v) {
+  return String(v ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
-function showToast(message, isError=false){
+
+/* ── Dark mode ── */
+function applyDark() {
+  document.documentElement.classList.toggle('dark', state.dark);
+  const btn = qs('dark-toggle');
+  if (btn) btn.textContent = state.dark ? '☀️' : '🌙';
+}
+
+/* ── Toast ── */
+function toast(msg, err = false) {
   const el = qs('toast');
-  el.className = 'toast';
-  el.style.background = isError ? '#991b1b' : '#0f172a';
-  el.textContent = message;
+  el.className = `toast ${err ? 'err' : 'ok'}`;
+  el.textContent = msg;
   el.classList.remove('hidden');
-  setTimeout(() => el.classList.add('hidden'), 3200);
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.add('hidden'), 3400);
 }
-function showModal(id){ qs(id).classList.remove('hidden'); }
-function closeModal(id){ qs(id).classList.add('hidden'); }
-function api(fn, ...args){
-  return new Promise((resolve, reject) => {
-    const runner = google.script.run.withSuccessHandler(resolve).withFailureHandler(err => reject(new Error(err && err.message ? err.message : String(err))));
-    runner[fn](...args);
+
+/* ── Modal ── */
+const openModal  = id => qs(id).classList.remove('hidden');
+const closeModal = id => qs(id).classList.add('hidden');
+
+/* ── API bridge ── */
+function api(fn, ...args) {
+  return new Promise((res, rej) => {
+    google.script.run
+      .withSuccessHandler(res)
+      .withFailureHandler(e => rej(new Error(e?.message || String(e))))
+      [fn](...args);
   });
 }
-function fmtDate(iso){
-  if(!iso) return '';
-  const d = new Date(iso + 'T00:00:00');
-  return d.toLocaleDateString('es-PY', {year:'numeric', month:'2-digit', day:'2-digit'});
-}
-function todayIso(){
+
+/* ── Date helpers ── */
+const todayIso = () => {
   const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth()+1).padStart(2,'0');
-  const day = String(d.getDate()).padStart(2,'0');
-  return `${y}-${m}-${day}`;
-}
-function daysBetween(a,b){
-  if(!a || !b) return null;
-  const da = new Date(a+'T00:00:00');
-  const db = new Date(b+'T00:00:00');
-  return Math.round((db-da)/86400000);
-}
-function getFilteredTasks(){
-  if(!state.app) return [];
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+};
+const localKey = d =>
+  `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+const daysBetween = (a, b) => {
+  if (!a || !b) return null;
+  return Math.round((new Date(b+'T00:00:00') - new Date(a+'T00:00:00')) / 86400000);
+};
+const fmtDate = iso => {
+  if (!iso) return '';
+  const d = new Date(iso+'T00:00:00');
+  return d.toLocaleDateString('es-PY', { day:'2-digit', month:'2-digit', year:'numeric' });
+};
+const normalClass = t => String(t||'').replace(/\s+/g,'-');
+
+/* ── Data helpers ── */
+const filtered = () => {
+  if (!state.app) return [];
+  const { project, status, priority, search } = state.filters;
   return state.app.tasks.filter(t => {
-    if(state.filters.project && t.project_id !== state.filters.project) return false;
-    if(state.filters.status && t.status !== state.filters.status) return false;
-    if(state.filters.priority && t.priority !== state.filters.priority) return false;
-    if(state.filters.search){
-      const needle = state.filters.search.toLowerCase();
-      const hay = [t.title,t.description,t.assignee_name,t.tags,t.task_id].join(' ').toLowerCase();
-      if(!hay.includes(needle)) return false;
+    if (project  && t.project_id !== project) return false;
+    if (status   && t.status !== status) return false;
+    if (priority && t.priority !== priority) return false;
+    if (search) {
+      const n = search.toLowerCase();
+      const h = [t.title, t.description, t.assignee_name, t.tags, t.task_id].join(' ').toLowerCase();
+      if (!h.includes(n)) return false;
     }
     return true;
   });
-}
-function getProjectName(projectId){
-  const p = state.app.projects.find(x => x.project_id === projectId);
-  return p ? p.project_name : projectId;
-}
-function getProjectColor(projectId){
-  const p = state.app.projects.find(x => x.project_id === projectId);
-  return p ? (p.color || '#14532d') : '#14532d';
-}
-function getUserName(userId, fallback=''){
-  const u = state.app.users.find(x => x.user_id === userId);
-  return u ? u.display_name : fallback;
-}
-function normalizeClass(text){
-  return String(text || '').replace(/\s+/g, '-');
-}
-function taskTooltipHtml(task){
-  const prog   = Number(task.progress || 0);
-  const days   = task.days_to_due;
-  const daysTxt = days === null ? '' : days < 0 ? `⚠️ Atrasada ${Math.abs(days)} d` : days === 0 ? '🔴 Vence hoy' : `⏳ ${days} días restantes`;
-  const overdueSt = task.overdue ? '<div class="tooltip-row"><span class="tooltip-label">Situación</span><span class="tooltip-val" style="color:#f87171">🚨 ATRASADA</span></div>' : '';
-  const pathTxt = task.work_path ? `<div class="tooltip-row"><span class="tooltip-label">Ruta</span><span class="tooltip-val">${escapeHtml(task.work_path)}</span></div>` : '';
-  const urlTxt  = task.folder_url ? `<div class="tooltip-row"><span class="tooltip-label">Enlace</span><span class="tooltip-val"><a href="${escapeHtml(task.folder_url)}" target="_blank" style="color:#6ee7b7">Abrir carpeta ↗</a></span></div>` : '';
-  const hrTxt   = task.estimated_hours ? `<div class="tooltip-row"><span class="tooltip-label">Horas</span><span class="tooltip-val">${escapeHtml(String(task.actual_hours||0))}h reales / ${escapeHtml(String(task.estimated_hours))}h est.</span></div>` : '';
-  const tagsTxt = task.tags ? `<div class="tooltip-row"><span class="tooltip-label">Etiquetas</span><span class="tooltip-val">${escapeHtml(task.tags)}</span></div>` : '';
-  const desc    = task.description ? `<div class="tooltip-desc">${escapeHtml(task.description).slice(0,300)}</div>` : '';
+};
+const projName  = id => (state.app.projects.find(p => p.project_id === id) || {}).project_name || id;
+const projColor = id => (state.app.projects.find(p => p.project_id === id) || {}).color || '#0f3d1d';
+const userName  = (id, fb='') => (state.app.users.find(u => u.user_id === id) || {}).display_name || fb;
+
+/* ── Tooltip ── */
+function tooltipHtml(t) {
+  const prog = Number(t.progress || 0);
+  const days = t.days_to_due;
+  const daysTxt = days === null ? '' : days < 0
+    ? `⚠️ Atrasada ${Math.abs(days)}d`
+    : days === 0 ? '🔴 Vence hoy' : `⏳ ${days}d restantes`;
+  const tags = (t.tags || '').split(',').map(x=>x.trim()).filter(Boolean)
+    .map(x=>`<span class="tag">${escHtml(x)}</span>`).join('');
+  const prog_class = prog >= 80 ? 'green' : prog >= 40 ? 'blue' : 'amber';
+
   return `
-    <div class="tooltip-title">${escapeHtml(task.title)}</div>
-    <div class="tooltip-row"><span class="tooltip-label">Tipo</span><span class="tooltip-val">${escapeHtml(task.type)}</span></div>
-    <div class="tooltip-row"><span class="tooltip-label">Proyecto</span><span class="tooltip-val">${escapeHtml(getProjectName(task.project_id))}</span></div>
-    <div class="tooltip-row"><span class="tooltip-label">Estado</span><span class="tooltip-val">${escapeHtml(task.status)}</span></div>
-    <div class="tooltip-row"><span class="tooltip-label">Prioridad</span><span class="tooltip-val">${escapeHtml(task.priority)}</span></div>
-    <div class="tooltip-row"><span class="tooltip-label">Inicio</span><span class="tooltip-val">${escapeHtml(task.start_date||'—')}</span></div>
-    <div class="tooltip-row"><span class="tooltip-label">Fin</span><span class="tooltip-val">${escapeHtml(task.due_date||'—')} ${daysTxt ? '· '+daysTxt : ''}</span></div>
-    <div class="tooltip-row"><span class="tooltip-label">Responsable</span><span class="tooltip-val">${escapeHtml(task.assignee_name||getUserName(task.assignee_user_id)||'Sin asignar')}</span></div>
-    <div class="tooltip-row"><span class="tooltip-label">Avance</span><span class="tooltip-val">${prog}% · ${task.duration_days||1} días</span></div>
-    <div class="tooltip-prog-wrap"><div class="tooltip-prog-bar" style="width:${prog}%"></div></div>
-    ${overdueSt}${hrTxt}${tagsTxt}${pathTxt}${urlTxt}${desc}
+    <div class="tooltip-title">${escHtml(t.title)}</div>
+    <div class="tooltip-row"><span class="tooltip-label">Tipo</span><span class="tooltip-val">${escHtml(t.type)}</span></div>
+    <div class="tooltip-row"><span class="tooltip-label">Proyecto</span><span class="tooltip-val">${escHtml(projName(t.project_id))}</span></div>
+    <div class="tooltip-row"><span class="tooltip-label">Estado</span><span class="tooltip-val">${escHtml(t.status)}</span></div>
+    <div class="tooltip-row"><span class="tooltip-label">Prioridad</span><span class="tooltip-val">${escHtml(t.priority)}</span></div>
+    <div class="tooltip-row"><span class="tooltip-label">Inicio</span><span class="tooltip-val">${escHtml(t.start_date||'—')}</span></div>
+    <div class="tooltip-row"><span class="tooltip-label">Fin</span><span class="tooltip-val">${escHtml(t.due_date||'—')}${daysTxt ? ' · '+daysTxt : ''}</span></div>
+    <div class="tooltip-row"><span class="tooltip-label">Resp.</span><span class="tooltip-val">${escHtml(t.assignee_name || userName(t.assignee_user_id) || 'Sin asignar')}</span></div>
+    <div class="tooltip-row"><span class="tooltip-label">Avance</span><span class="tooltip-val">${prog}%</span></div>
+    <div class="tooltip-prog"><div class="tooltip-prog-fill" style="width:${prog}%"></div></div>
+    ${t.estimated_hours ? `<div class="tooltip-row"><span class="tooltip-label">Horas</span><span class="tooltip-val">${escHtml(String(t.actual_hours||0))}h / ${escHtml(String(t.estimated_hours))}h est.</span></div>` : ''}
+    ${t.work_path ? `<div class="tooltip-row"><span class="tooltip-label">Ruta</span><span class="tooltip-val" style="font-size:11px;opacity:.9">${escHtml(t.work_path)}</span></div>` : ''}
+    ${t.folder_url ? `<div class="tooltip-row"><span class="tooltip-label">Drive</span><span class="tooltip-val"><a href="${escHtml(t.folder_url)}" target="_blank" style="color:var(--g300)">Abrir carpeta ↗</a></span></div>` : ''}
+    ${tags ? `<div style="margin-top:8px">${tags}</div>` : ''}
+    ${t.description ? `<div class="tooltip-desc">${escHtml(t.description).slice(0,280)}</div>` : ''}
   `;
 }
-function attachTooltip(targetSelector='[data-tooltip-task]'){
-  document.querySelectorAll(targetSelector).forEach(el => {
+
+function attachTooltips(sel = '[data-tt]') {
+  qsa(sel).forEach(el => {
     el.onmouseenter = ev => {
-      const taskId = el.getAttribute('data-tooltip-task');
-      const task = state.app.tasks.find(t => t.task_id === taskId);
-      if(!task) return;
+      const taskId = el.getAttribute('data-tt');
+      const t = state.app.tasks.find(x => x.task_id === taskId);
+      if (!t) return;
       const tip = qs('tooltip');
-      tip.innerHTML = taskTooltipHtml(task);
+      tip.innerHTML = tooltipHtml(t);
       tip.classList.remove('hidden');
       moveTooltip(ev);
     };
@@ -125,659 +152,1002 @@ function attachTooltip(targetSelector='[data-tooltip-task]'){
     el.onmouseleave = () => qs('tooltip').classList.add('hidden');
   });
 }
-function moveTooltip(ev){
+function moveTooltip(ev) {
   const tip = qs('tooltip');
-  tip.style.left = (ev.clientX + 16) + 'px';
-  tip.style.top = (ev.clientY + 16) + 'px';
+  const pad = 14;
+  const rect = tip.getBoundingClientRect();
+  let l = ev.clientX + 18, t = ev.clientY + 18;
+  if (l + rect.width + pad > window.innerWidth)  l = Math.max(pad, ev.clientX - rect.width - 18);
+  if (t + rect.height + pad > window.innerHeight) t = Math.max(pad, ev.clientY - rect.height - 18);
+  tip.style.left = l + 'px'; tip.style.top = t + 'px';
 }
-function renderFilters(){
-  const projectSel = qs('filter-project');
-  const taskProjectSel = qs('task-project');
-  const options = ['<option value="">Todos</option>'].concat(state.app.projects.map(p => `<option value="${escapeHtml(p.project_id)}">${escapeHtml(p.project_name)}</option>`));
-  projectSel.innerHTML = options.join('');
-  projectSel.value = state.filters.project;
 
-  const taskProjectOptions = state.app.projects.map(p => `<option value="${escapeHtml(p.project_id)}">${escapeHtml(p.project_name)}</option>`).join('');
-  taskProjectSel.innerHTML = taskProjectOptions;
-
-  const assigneeOptions = ['<option value="">Sin asignar</option>'].concat(state.app.users.map(u => `<option value="${escapeHtml(u.user_id)}">${escapeHtml(u.display_name)}</option>`));
-  qs('task-assignee').innerHTML = assigneeOptions.join('');
+/* ── Open task links ── */
+function bindOpenTask() {
+  qsa('[data-open]').forEach(el => {
+    el.onclick = () => openTask(el.getAttribute('data-open'));
+  });
 }
-function renderMessageBar(){
+
+/* ═══════════════════════════════════════
+   RENDER: FILTERS
+═══════════════════════════════════════ */
+function renderFilters() {
+  const opts = ['<option value="">Todos</option>']
+    .concat(state.app.projects.map(p =>
+      `<option value="${escHtml(p.project_id)}">${escHtml(p.project_name)}</option>`));
+  qs('filter-project').innerHTML = opts.join('');
+  qs('filter-project').value = state.filters.project;
+
+  // task project select
+  qs('task-project').innerHTML = state.app.projects.map(p =>
+    `<option value="${escHtml(p.project_id)}">${escHtml(p.project_name)}</option>`).join('');
+
+  const users = ['<option value="">Sin asignar</option>']
+    .concat(state.app.users.map(u =>
+      `<option value="${escHtml(u.user_id)}">${escHtml(u.display_name)}</option>`));
+  qs('task-assignee').innerHTML = users.join('');
+}
+
+/* ═══════════════════════════════════════
+   RENDER: MESSAGE BAR
+═══════════════════════════════════════ */
+function renderMessageBar() {
   const d = state.app.dashboard;
-  const urgentTitles = d.top_urgent.slice(0,3).map(t => escapeHtml(t.title)).join(' · ');
   const badge = d.urgent > 0 ? `<span class="urgent-badge">${d.urgent}</span>` : '';
+  const titles = d.top_urgent.slice(0,2).map(t => escHtml(t.title)).join(' · ');
   qs('message-bar').innerHTML = `
     ${badge}
-    <span><strong>${d.urgent}</strong> urgentes · <strong>${d.overdue}</strong> atrasadas · <strong>${d.due_today}</strong> vencen hoy · <strong>${d.blocked}</strong> bloqueadas${urgentTitles ? ' — ' + urgentTitles : ''}</span>
+    <span>
+      <strong>${d.urgent}</strong> urgentes ·
+      <strong>${d.overdue}</strong> atrasadas ·
+      <strong>${d.due_today}</strong> vencen hoy ·
+      <strong>${d.blocked}</strong> bloqueadas
+      ${titles ? ` — ${titles}` : ''}
+    </span>
   `;
 }
-function renderDashboard(){
+
+/* ═══════════════════════════════════════
+   RENDER: DASHBOARD
+═══════════════════════════════════════ */
+function renderDashboard() {
   const d = state.app.dashboard;
-  const total = d.tasks || 1;
+  const total = Math.max(d.tasks, 1);
+
+  const kpis = [
+    { label:'Proyectos',       val:d.projects,      sub:'En portafolio',                 pct:(d.projects/10)*100, cls:'' },
+    { label:'Tareas abiertas', val:d.open_tasks,     sub:'Pendientes, en curso, bloqueadas',pct:(d.open_tasks/total)*100, cls:'' },
+    { label:'Urgentes',        val:d.urgent,         sub:'Prioridad crítica o vence pronto',pct:(d.urgent/total)*100, cls:'danger' },
+    { label:'Atrasadas',       val:d.overdue,        sub:'Requieren acción inmediata',    pct:(d.overdue/total)*100, cls:'danger' },
+    { label:'Bloqueadas',      val:d.blocked,        sub:'Riesgos operativos activos',    pct:(d.blocked/total)*100, cls:'amber' },
+    { label:'Avance promedio', val:d.avg_progress+'%',sub:'Global del portafolio',        pct:d.avg_progress, cls:'teal' }
+  ];
+
   qs('tab-dashboard').innerHTML = `
-    <div class="grid-cards">
-      ${kpiCard('Proyectos activos', d.projects, 'Portafolio accesible', (d.projects/10)*100)}
-      ${kpiCard('Tareas abiertas', d.open_tasks, 'Pendientes, en curso o bloqueadas', (d.open_tasks/total)*100)}
-      ${kpiCard('Tareas urgentes', d.urgent, 'Prioridad crítica o vencimiento cercano', (d.urgent/total)*100)}
-      ${kpiCard('Atrasadas', d.overdue, 'Requieren intervención inmediata', (d.overdue/total)*100)}
-      ${kpiCard('Bloqueadas', d.blocked, 'Riesgos operativos', (d.blocked/total)*100)}
-      ${kpiCard('Avance promedio', d.avg_progress + '%', 'Promedio general de progreso', d.avg_progress)}
+    <div class="kpi-grid">
+      ${kpis.map(k => kpiCard(k)).join('')}
     </div>
-    <div class="dashboard-grid">
+    <div class="dash-grid">
       <div class="stack">
         <div class="card">
-          <div class="timeline-title">Tareas más urgentes</div>
-          <div class="timeline-subtitle">Lista ejecutiva priorizada para gestión inmediata</div>
+          <div class="section-header">
+            <div>
+              <div class="section-title">⚡ Tareas urgentes</div>
+              <div class="section-sub">Lista ejecutiva priorizada — haz clic para abrir</div>
+            </div>
+          </div>
           <div class="table-wrap">
             <table class="table">
-              <thead><tr><th>Tarea</th><th>Proyecto</th><th>Estado</th><th>Prioridad</th><th>Fin</th><th>Resp.</th></tr></thead>
+              <thead><tr><th>Tarea</th><th>Proyecto</th><th>Estado</th><th>Prioridad</th><th>Fin</th><th>Resp.</th><th>%</th></tr></thead>
               <tbody>
                 ${d.top_urgent.map(t => `
-                  <tr data-open-task="${escapeHtml(t.task_id)}">
-                    <td><span class="type-chip ${escapeHtml(t.type)}">${escapeHtml(t.type)}</span> ${escapeHtml(t.title)}</td>
-                    <td>${escapeHtml(getProjectName(t.project_id))}</td>
-                    <td><span class="badge status-${normalizeClass(t.status)}">${escapeHtml(t.status)}</span></td>
-                    <td><span class="badge priority-${normalizeClass(t.priority)}">${escapeHtml(t.priority)}</span></td>
-                    <td>${escapeHtml(t.due_date || '')}</td>
-                    <td>${escapeHtml(t.assignee_name || getUserName(t.assignee_user_id) || '')}</td>
+                  <tr data-open="${escHtml(t.task_id)}" data-tt="${escHtml(t.task_id)}">
+                    <td><span class="type-chip ${escHtml(t.type)}">${escHtml(t.type)}</span> ${escHtml(t.title)}</td>
+                    <td class="muted">${escHtml(projName(t.project_id))}</td>
+                    <td><span class="badge status-${normalClass(t.status)}">${escHtml(t.status)}</span></td>
+                    <td><span class="badge priority-${normalClass(t.priority)}">${escHtml(t.priority)}</span></td>
+                    <td class="muted" style="font-family:'DM Mono',monospace;font-size:12px">${escHtml(t.due_date||'')}</td>
+                    <td class="muted">${escHtml(t.assignee_name||userName(t.assignee_user_id)||'—')}</td>
+                    <td>
+                      <div style="display:flex;align-items:center;gap:6px">
+                        <div class="prog-wrap" style="width:56px"><div class="prog-fill green" style="width:${t.progress||0}%"></div></div>
+                        <span class="muted small">${t.progress||0}%</span>
+                      </div>
+                    </td>
                   </tr>
-                `).join('') || '<tr><td colspan="6">Sin registros urgentes.</td></tr>'}
+                `).join('') || '<tr><td colspan="7" style="text-align:center" class="muted">Sin tareas urgentes.</td></tr>'}
               </tbody>
             </table>
-          </div>
-        </div>
-        <div class="card">
-          <div class="timeline-title">Actividad reciente</div>
-          <div class="timeline-subtitle">Eventos generados por usuarios y por el sistema</div>
-          <div class="activity-list">
-            ${state.app.activity.slice(-12).reverse().map(a => `
-              <div class="activity-item">
-                <div><strong>${escapeHtml(a.actor_name || 'Sistema')}</strong> · ${escapeHtml(a.action)}</div>
-                <div class="muted small">${escapeHtml(a.entity_type)} · ${escapeHtml(a.entity_id)}</div>
-                <div class="muted small">${escapeHtml(a.created_at)}</div>
-              </div>
-            `).join('') || '<div class="activity-item">Sin actividad reciente.</div>'}
           </div>
         </div>
       </div>
-
       <div class="stack">
         <div class="card">
-          <div class="timeline-title">Carga por responsable</div>
-          <div class="timeline-subtitle">Tareas abiertas por integrante del equipo</div>
+          <div class="section-title">👤 Carga por usuario</div>
+          <div class="section-sub" style="margin-bottom:12px">Tareas abiertas por responsable</div>
           <div class="table-wrap">
             <table class="table">
-              <thead><tr><th>Responsable</th><th>Abiertas</th><th>Urgentes</th></tr></thead>
-              <tbody>
-              ${renderResponsibilityRows()}
-              </tbody>
+              <thead><tr><th>Usuario</th><th>Abiertas</th><th>Urgentes</th></tr></thead>
+              <tbody>${renderResponsibleRows()}</tbody>
             </table>
           </div>
         </div>
         <div class="card">
-          <div class="timeline-title">Resumen por proyecto</div>
-          <div class="timeline-subtitle">Estado agregado del portafolio</div>
+          <div class="section-title">📂 Resumen por proyecto</div>
+          <div class="section-sub" style="margin-bottom:12px">Tareas y avance medio</div>
           <div class="table-wrap">
             <table class="table">
-              <thead><tr><th>Proyecto</th><th>Tareas</th><th>Urgentes</th><th>Atrasadas</th><th>Avance medio</th></tr></thead>
-              <tbody>
-              ${renderProjectSummaryRows()}
-              </tbody>
+              <thead><tr><th>Proyecto</th><th>Tareas</th><th>Urgentes</th><th>Avance</th></tr></thead>
+              <tbody>${renderProjectRows()}</tbody>
             </table>
           </div>
         </div>
       </div>
     </div>
   `;
-  bindOpenTaskLinks();
+  bindOpenTask();
+  attachTooltips('[data-tt]');
 }
-function kpiCard(title, value, sub, pct){
-  const bar = pct !== undefined ? `<div class="kpi-bar-wrap"><div class="kpi-bar" style="width:${Math.min(100,pct)}%"></div></div>` : '';
-  return `<div class="card"><div class="kpi-title">${escapeHtml(title)}</div><div class="kpi-value">${escapeHtml(String(value))}</div><div class="kpi-sub">${escapeHtml(sub)}</div>${bar}</div>`;
+
+function kpiCard({ label, val, sub, pct, cls }) {
+  const r = 18, c = 2 * Math.PI * r;
+  const offset = c - (pct / 100) * c;
+  const color = cls === 'danger' ? 'var(--red-light)' : cls === 'amber' ? 'var(--amber)' : cls === 'teal' ? 'var(--teal-light)' : 'var(--g500)';
+  return `
+    <div class="kpi-card ${cls}">
+      <div class="kpi-label">${escHtml(label)}</div>
+      <div class="kpi-val">${escHtml(String(val))}</div>
+      <div class="kpi-sub">${escHtml(sub)}</div>
+      <div class="kpi-bar"><div class="kpi-fill" style="width:${Math.min(100,pct)}%"></div></div>
+      <div class="kpi-ring">
+        <svg class="ring-svg" width="44" height="44" viewBox="0 0 44 44">
+          <circle class="ring-bg" cx="22" cy="22" r="${r}"/>
+          <circle class="ring-fg" cx="22" cy="22" r="${r}"
+            stroke="${color}"
+            stroke-dasharray="${c}"
+            stroke-dashoffset="${offset}"
+          />
+        </svg>
+      </div>
+    </div>
+  `;
 }
-function renderResponsibilityRows(){
+
+function renderResponsibleRows() {
   const open = state.app.tasks.filter(t => !['Completada','Cancelada'].includes(t.status));
   const map = {};
   open.forEach(t => {
-    const name = t.assignee_name || getUserName(t.assignee_user_id, 'Sin asignar') || 'Sin asignar';
-    if(!map[name]) map[name] = {open:0, urgent:0};
-    map[name].open += 1;
-    if(t.urgent) map[name].urgent += 1;
+    const n = t.assignee_name || userName(t.assignee_user_id, 'Sin asignar');
+    if (!map[n]) map[n] = { open:0, urgent:0 };
+    map[n].open++;
+    if (t.urgent) map[n].urgent++;
   });
-  const rows = Object.entries(map).sort((a,b) => b[1].urgent - a[1].urgent || b[1].open - a[1].open);
-  return rows.map(([name, m]) => `<tr><td>${escapeHtml(name)}</td><td>${m.open}</td><td>${m.urgent}</td></tr>`).join('') || '<tr><td colspan="3">Sin datos.</td></tr>';
+  return Object.entries(map).sort((a,b) => b[1].urgent - a[1].urgent)
+    .map(([n,m]) => `<tr><td>${escHtml(n)}</td><td>${m.open}</td><td>${m.urgent}</td></tr>`)
+    .join('') || '<tr><td colspan="3" class="muted">Sin datos.</td></tr>';
 }
-function renderProjectSummaryRows(){
+
+function renderProjectRows() {
   return state.app.projects.map(p => {
     const tasks = state.app.tasks.filter(t => t.project_id === p.project_id);
     const urgent = tasks.filter(t => t.urgent).length;
-    const overdue = tasks.filter(t => t.overdue).length;
-    const avg = tasks.length ? Math.round(tasks.reduce((a,t)=>a+Number(t.progress||0),0)/tasks.length) : 0;
+    const avg = tasks.length
+      ? Math.round(tasks.reduce((a,t) => a + Number(t.progress||0), 0) / tasks.length)
+      : 0;
     return `<tr>
-      <td>${escapeHtml(p.project_name)}</td>
-      <td>${tasks.length}</td>
-      <td>${urgent}</td>
-      <td>${overdue}</td>
-      <td>${avg}%</td>
+      <td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${escHtml(p.color||'#0f3d1d')};margin-right:6px;vertical-align:middle"></span>${escHtml(p.project_name)}</td>
+      <td>${tasks.length}</td><td>${urgent}</td>
+      <td>
+        <div style="display:flex;align-items:center;gap:6px">
+          <div class="prog-wrap" style="width:60px"><div class="prog-fill green" style="width:${avg}%"></div></div>
+          <span class="muted small">${avg}%</span>
+        </div>
+      </td>
     </tr>`;
-  }).join('') || '<tr><td colspan="5">Sin proyectos.</td></tr>';
+  }).join('') || '<tr><td colspan="4" class="muted">Sin proyectos.</td></tr>';
 }
-function renderTimeline(){
-  const tasks = getFilteredTasks();
+
+/* ═══════════════════════════════════════
+   RENDER: TIMELINE (GANTT)
+═══════════════════════════════════════ */
+function renderTimeline() {
+  const tasks = filtered();
   const target = qs('tab-timeline');
-  if(!tasks.length){
-    target.innerHTML = `<div class="card">No existen tareas que cumplan los filtros actuales.</div>`;
+  if (!tasks.length) {
+    target.innerHTML = `<div class="empty-state"><div class="empty-icon">📅</div><div class="empty-text">No hay tareas que coincidan con los filtros actuales.</div></div>`;
     return;
   }
-  const startMin = tasks.map(t => t.start_date || t.due_date || todayIso()).sort()[0];
-  const dueMax = tasks.map(t => t.due_date || t.start_date || todayIso()).sort().slice(-1)[0];
-  const span = Math.max(1, daysBetween(startMin, dueMax) + 1);
+
+  const all_dates = tasks.flatMap(t => [t.start_date, t.due_date].filter(Boolean));
+  const startMin  = (all_dates.length ? all_dates.sort()[0] : todayIso());
+  const dueMax    = (all_dates.length ? all_dates.sort().slice(-1)[0] : todayIso());
+  const span      = Math.max(1, daysBetween(startMin, dueMax) + 1);
+  const today     = todayIso();
+
+  // Compute month headers
   const months = [];
   let cursor = new Date(startMin + 'T00:00:00');
   const endDate = new Date(dueMax + 'T00:00:00');
-  let index = 0;
-  while(cursor <= endDate){
-    const startIndex = index;
-    const month = cursor.getMonth();
-    const year = cursor.getFullYear();
+  while (cursor <= endDate) {
+    const m = cursor.getMonth(), y = cursor.getFullYear();
     let days = 0;
-    while(cursor <= endDate && cursor.getMonth() === month && cursor.getFullYear() === year){
-      days += 1;
-      cursor.setDate(cursor.getDate()+1);
-      index += 1;
+    while (cursor <= endDate && cursor.getMonth() === m && cursor.getFullYear() === y) {
+      days++; cursor.setDate(cursor.getDate() + 1);
     }
-    months.push({label:new Date(year, month, 1).toLocaleDateString('es-PY', {month:'short', year:'numeric'}), days});
+    months.push({ label: new Date(y, m, 1).toLocaleDateString('es-PY', { month:'short', year:'numeric' }), days });
   }
+
+  // Today column index
+  const todayOffset = daysBetween(startMin, today);
+  const isCompact = state.ganttMode === 'compact';
 
   let html = `
     <div class="timeline-shell">
       <div class="timeline-header">
-        <div class="timeline-title">Cronograma interactivo</div>
-        <div class="timeline-subtitle">Doble clic para editar, puntero para información ampliada, y control completo sobre responsables, adjuntos, rutas y dependencias.</div>
+        <div style="display:flex;justify-content:space-between;align-items:flex-start">
+          <div>
+            <div class="card-title">Cronograma interactivo</div>
+            <div class="card-sub">Doble clic en bloque para editar · Puntero para información ampliada</div>
+          </div>
+          <div class="timeline-toolbar">
+            <button class="btn ghost sm" id="btn-gantt-compact">
+              ${isCompact ? '⬜ Expandir' : '⬛ Compactar'}
+            </button>
+            <button class="btn ghost sm" id="btn-gantt-today">📍 Hoy</button>
+          </div>
+        </div>
       </div>
-      <div class="timeline-scroll">
-        <div class="timeline-grid" style="--timeline-day-width:28px">
-          <div class="timeline-months">
-            <div class="timeline-label-cell"><strong>Estructura del proyecto</strong></div>
-            <div class="timeline-cells">
-              ${months.map(m => `<div class="month-cell" style="grid-column: span ${m.days};">${escapeHtml(m.label)}</div>`).join('')}
+      <div class="timeline-scroll" id="tl-scroll">
+        <div class="timeline-grid" style="--tl-day-w:${isCompact?22:26}px">
+          <div class="tl-months">
+            <div class="tl-label-cell"><strong style="font-size:12px;color:var(--muted)">Estructura del proyecto</strong></div>
+            <div class="tl-cells" style="width:${span * (isCompact?22:26)}px;flex-shrink:0">
+              ${months.map(m => `<div class="month-cell" style="grid-column:span ${m.days}">${escHtml(m.label)}</div>`).join('')}
             </div>
           </div>
-          <div class="timeline-days">
-            <div class="timeline-label-cell"><strong>Intervalo diario</strong></div>
-            <div class="timeline-cells">
-              ${Array.from({length: span}, (_,i) => {
-                const d = new Date(startMin + 'T00:00:00'); d.setDate(d.getDate()+i);
-                return `<div class="day-cell">${String(d.getDate()).padStart(2,'0')}</div>`;
+          <div class="tl-days">
+            <div class="tl-label-cell"><strong style="font-size:11px;color:var(--muted)">Intervalo diario</strong></div>
+            <div class="tl-cells" style="width:${span * (isCompact?22:26)}px;flex-shrink:0">
+              ${Array.from({ length: span }, (_,i) => {
+                const d = new Date(startMin + 'T00:00:00'); d.setDate(d.getDate() + i);
+                const isToday2 = localKey(d) === today;
+                return `<div class="day-cell${isToday2?' today-col':''}">${String(d.getDate()).padStart(2,'0')}</div>`;
               }).join('')}
             </div>
           </div>
   `;
+
+  const dayW = isCompact ? 22 : 26;
+  // Ancho total del área de celdas — crítico para posicionamiento absoluto de bloques
+  const cellsW = span * dayW;
+
   tasks.forEach(task => {
-    const offset = Math.max(0, daysBetween(startMin, task.start_date || task.due_date || startMin));
-    const length = Math.max(1, daysBetween(task.start_date || task.due_date || startMin, task.due_date || task.start_date || startMin) + 1);
-    const left  = offset * 28 + 4;
-    const width = Math.max(36, length * 28 - 8);
+    const sd   = task.start_date || task.due_date || startMin;
+    const ed   = task.due_date   || task.start_date || startMin;
+    const off  = Math.max(0, daysBetween(startMin, sd));
+    const len  = Math.max(1, daysBetween(sd, ed) + 1);
+    const left = off * dayW + 4;
     const isHito = task.type === 'Hito';
-    const blockType = (task.type === 'Tema' || task.type === 'Subtema' || task.type === 'Hito') ? `type-${task.type}` : `priority-${task.priority}`;
+    const width = isHito ? dayW : Math.max(34, len * dayW - 8);
+    const blockCls = ['Tema','Subtema','Hito'].includes(task.type)
+      ? `type-${task.type}` : `priority-${task.priority}`;
+
     html += `
-      <div class="timeline-row row-${escapeHtml(task.type)}">
-        <div class="timeline-label-cell">
-          <div class="timeline-label theme-${escapeHtml(task.type)}" data-open-task="${escapeHtml(task.task_id)}">
-            <div class="title">${escapeHtml(task.title)}</div>
-            <div class="meta">${escapeHtml(getProjectName(task.project_id))} · ${escapeHtml(task.status)} · ${escapeHtml(task.assignee_name || getUserName(task.assignee_user_id) || 'Sin asignar')}</div>
+      <div class="tl-row row-${escHtml(task.type)}${isCompact ? ' compact' : ''}">
+        <div class="tl-label-cell">
+          <div class="tl-label theme-${escHtml(task.type)}">
+            <div class="tl-title" data-open="${escHtml(task.task_id)}">${escHtml(task.title)}</div>
+            <div class="tl-meta">${escHtml(projName(task.project_id))} · ${escHtml(task.status)} · ${escHtml(task.assignee_name || userName(task.assignee_user_id) || 'Sin asignar')}</div>
+            ${!isCompact ? `<div class="prog-wrap" style="width:100%;margin-top:4px"><div class="prog-fill ${task.overdue?'red':'green'}" style="width:${task.progress||0}%"></div></div>` : ''}
           </div>
         </div>
-        <div class="timeline-cells">
-          ${Array.from({length: span}, () => '<div class="day-cell"></div>').join('')}
-          <div class="timeline-block ${blockType} status-${escapeHtml(task.status)}"
-            data-open-task="${escapeHtml(task.task_id)}"
-            data-tooltip-task="${escapeHtml(task.task_id)}"
-            data-dblclick-task="${escapeHtml(task.task_id)}"
-            style="left:${left}px;width:${isHito ? 28 : width}px;border-left:5px solid ${getProjectColor(task.project_id)};">
-            <div class="block-title">${escapeHtml(task.title)}</div>
-            ${!isHito ? `<div class="block-sub">${escapeHtml(task.start_date||'')} → ${escapeHtml(task.due_date||'')} · ${task.progress}%</div>` : ''}
+        <div class="tl-cells" style="width:${cellsW}px;flex-shrink:0">
+          ${Array.from({ length: span }, (_,i) => {
+            const isT = i === todayOffset;
+            return `<div class="day-cell${isT?' today-col':''}"></div>`;
+          }).join('')}
+          ${todayOffset >= 0 && todayOffset < span
+            ? `<div class="today-line" style="left:${todayOffset * dayW + dayW/2}px"></div>` : ''}
+          <div class="tl-block ${blockCls} status-${normalClass(task.status)}"
+            data-open="${escHtml(task.task_id)}"
+            data-tt="${escHtml(task.task_id)}"
+            data-dbl="${escHtml(task.task_id)}"
+            style="left:${left}px;width:${width}px;border-left:4px solid ${projColor(task.project_id)}">
+            <div class="b-title">${escHtml(task.title)}</div>
+            ${!isHito && !isCompact
+              ? `<div class="b-sub">${escHtml(task.start_date||'')} → ${escHtml(task.due_date||'')} · ${task.progress||0}%</div>`
+              : ''}
           </div>
         </div>
       </div>
     `;
   });
+
   html += `</div></div></div>`;
   target.innerHTML = html;
-  bindOpenTaskLinks();
-  attachTooltip();
-  attachGanttDblClick();
+
+  // Buttons
+  qs('btn-gantt-compact').onclick = () => {
+    state.ganttMode = state.ganttMode === 'compact' ? 'normal' : 'compact';
+    store.set('paracel_gantt_mode', state.ganttMode);
+    renderTimeline();
+  };
+  qs('btn-gantt-today').onclick = () => {
+    const scroll = qs('tl-scroll');
+    const todayPx = (todayOffset ?? 0) * dayW;
+    scroll.scrollLeft = Math.max(0, todayPx - 200);
+  };
+
+  bindOpenTask();
+  attachTooltips('[data-tt]');
+  attachGanttDbl();
 }
-function attachGanttDblClick(){
-  document.querySelectorAll('[data-dblclick-task]').forEach(el => {
+
+function attachGanttDbl() {
+  qsa('[data-dbl]').forEach(el => {
     el.ondblclick = ev => {
-      ev.stopPropagation();
-      ev.preventDefault();
-      const taskId = el.getAttribute('data-dblclick-task');
-      openGanttFloatPanel(taskId, ev.clientX, ev.clientY);
+      ev.stopPropagation(); ev.preventDefault();
+      openGanttPanel(el.getAttribute('data-dbl'), ev.clientX, ev.clientY);
     };
   });
 }
-async function openGanttFloatPanel(taskId, cx, cy){
+
+async function openGanttPanel(taskId, cx, cy) {
   try {
     const detail = await api('getTaskDetail', state.token, taskId);
     const t = detail.task;
-    const panel = qs('gantt-float-panel');
+    const prog = t.progress || 0;
     qs('gfp-title').textContent = t.title;
     qs('gfp-body').innerHTML = `
-      <div style="display:grid;gap:8px;font-size:13px">
-        <div><strong>Estado:</strong> ${escapeHtml(t.status)} | <strong>Prioridad:</strong> ${escapeHtml(t.priority)}</div>
-        <div><strong>Tipo:</strong> ${escapeHtml(t.type)} | <strong>Avance:</strong> ${t.progress}%</div>
-        <div style="height:6px;background:#e2e8f0;border-radius:99px;overflow:hidden"><div style="height:100%;background:#15803d;width:${t.progress}%"></div></div>
-        <div><strong>Inicio:</strong> ${escapeHtml(t.start_date||'—')} | <strong>Fin:</strong> ${escapeHtml(t.due_date||'—')}</div>
-        <div><strong>Responsable:</strong> ${escapeHtml(t.assignee_name||getUserName(t.assignee_user_id)||'Sin asignar')}</div>
-        ${t.work_path ? `<div><strong>Ruta:</strong> <span style="color:#15803d">${escapeHtml(t.work_path)}</span></div>` : ''}
-        ${t.folder_url ? `<div><a href="${escapeHtml(t.folder_url)}" target="_blank">Abrir carpeta ↗</a></div>` : ''}
-        ${t.description ? `<div style="margin-top:6px;color:#4d6658;font-size:12px">${escapeHtml(t.description).slice(0,300)}</div>` : ''}
-        <div style="margin-top:10px;display:flex;gap:8px">
-          <button class="btn primary" style="flex:1" onclick="openTask('${escapeHtml(taskId)}');qs('gantt-float-panel').classList.add('hidden')">Editar completo</button>
-          <button class="btn ghost" onclick="qs('gantt-float-panel').classList.add('hidden')">Cerrar</button>
+      <div style="display:grid;gap:9px;font-size:13px">
+        <div>
+          <span class="badge status-${normalClass(t.status)}">${escHtml(t.status)}</span>
+          <span class="badge priority-${normalClass(t.priority)}" style="margin-left:4px">${escHtml(t.priority)}</span>
+        </div>
+        <div><strong>Tipo:</strong> <span class="type-chip ${escHtml(t.type)}">${escHtml(t.type)}</span></div>
+        <div><strong>Avance:</strong> ${prog}%</div>
+        <div class="prog-wrap"><div class="prog-fill green" style="width:${prog}%"></div></div>
+        <div><strong>Fechas:</strong> ${escHtml(t.start_date||'—')} → ${escHtml(t.due_date||'—')}</div>
+        <div><strong>Responsable:</strong> ${escHtml(t.assignee_name || userName(t.assignee_user_id) || 'Sin asignar')}</div>
+        ${t.work_path ? `<div class="muted small" style="word-break:break-all">${escHtml(t.work_path)}</div>` : ''}
+        ${t.folder_url ? `<div><a href="${escHtml(t.folder_url)}" target="_blank">Abrir carpeta ↗</a></div>` : ''}
+        ${t.description ? `<div class="muted" style="font-size:12px;margin-top:4px">${escHtml(t.description).slice(0,280)}</div>` : ''}
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="btn primary sm" style="flex:1" onclick="openTask('${escHtml(taskId)}');qs('gantt-float-panel').classList.add('hidden')">Editar completo</button>
+          <button class="btn ghost sm" onclick="qs('gantt-float-panel').classList.add('hidden')">Cerrar</button>
         </div>
       </div>
     `;
-    const pw = 380, ph = 320;
-    const sx = Math.min(cx + 10, window.innerWidth - pw - 10);
-    const sy = Math.min(cy + 10, window.innerHeight - ph - 10);
-    panel.style.left = sx + 'px';
-    panel.style.top  = sy + 'px';
+    const pw = 380;
+    const panel = qs('gantt-float-panel');
+    const sx = Math.min(cx + 10, window.innerWidth  - pw - 10);
+    const sy = Math.min(cy + 10, window.innerHeight - panel.offsetHeight - 10);
+    panel.style.left = sx + 'px'; panel.style.top = sy + 'px';
     panel.classList.remove('hidden');
-  } catch(err){ showToast(err.message, true); }
+  } catch (err) { toast(err.message, true); }
 }
-function renderCalendar(){
-  const target = qs('tab-calendar');
-  const month = state.calendar.month;
-  const year = state.calendar.year;
+
+/* ═══════════════════════════════════════
+   RENDER: CALENDARIO
+═══════════════════════════════════════ */
+function projNameShort(id) {
+  const full = projName(id);
+  return full.length > 14 ? full.slice(0,12)+'…' : full;
+}
+
+function renderCalMiniGantt(year, month, tasks) {
+  const daysInM = new Date(year, month + 1, 0).getDate();
+  const mStart  = `${year}-${String(month+1).padStart(2,'0')}-01`;
+  const mEnd    = `${year}-${String(month+1).padStart(2,'0')}-${String(daysInM).padStart(2,'0')}`;
+  const today   = todayIso();
+  const todayDay = today >= mStart && today <= mEnd ? Number(today.slice(8)) : null;
+
+  const projMap = {};
+  tasks.forEach(t => {
+    const s = t.start_date||t.due_date||''; const e = t.due_date||t.start_date||'';
+    if (!s && !e) return;
+    if ((e||mStart) < mStart || (s||mEnd) > mEnd) return;
+    if (!projMap[t.project_id]) projMap[t.project_id] = [];
+    projMap[t.project_id].push(t);
+  });
+  const projIds = Object.keys(projMap);
+  if (!projIds.length) return '<div class="muted small">Sin proyectos en este mes.</div>';
+
+  const dayPct = 100 / daysInM;
+  return `<div class="mini-gantt-wrap">
+    <div class="mg-header">
+      <div class="mg-label"></div>
+      <div class="mg-days">
+        ${Array.from({length:daysInM},(_,i)=>`<div class="mg-day${i+1===todayDay?' mg-today':''}">${i+1}</div>`).join('')}
+      </div>
+    </div>
+    ${projIds.map(pid => {
+      const p = state.app.projects.find(x=>x.project_id===pid);
+      const pColor = p?.color||'#0f3d1d';
+      const pTasks = projMap[pid];
+      const avg = Math.round(pTasks.reduce((a,t)=>a+Number(t.progress||0),0)/pTasks.length);
+      return `<div class="mg-proj-row">
+        <div class="mg-label" title="${escHtml(p?.project_name||pid)}" style="border-left:3px solid ${pColor}">
+          <span>${escHtml(projNameShort(pid))}</span>
+          <span class="mg-pct">${avg}%</span>
+        </div>
+        <div class="mg-days" style="position:relative">
+          ${Array.from({length:daysInM},()=>'<div class="mg-day-cell"></div>').join('')}
+          ${todayDay?`<div class="mg-today-line" style="left:${(todayDay-1)*dayPct}%"></div>`:''}
+          ${pTasks.map(t=>{
+            const ts=t.start_date||t.due_date||mStart; const te=t.due_date||t.start_date||mStart;
+            const s=ts<mStart?mStart:ts; const e=te>mEnd?mEnd:te;
+            const sd=Number(s.slice(8)); const ed=Number(e.slice(8));
+            const lp=((sd-1)*dayPct); const wp=Math.max(dayPct,((ed-sd+1)*dayPct));
+            const bc=t.overdue?'#c0392b':pColor;
+            return `<div class="mg-block" data-open="${escHtml(t.task_id)}" data-tt="${escHtml(t.task_id)}"
+              style="left:${lp}%;width:${wp}%;background:${bc};opacity:${t.status==='Completada'?0.45:0.82}"
+              title="${escHtml(t.title)}"></div>`;
+          }).join('')}
+        </div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+function renderCalendar() {
+  const { month, year } = state.calendar;
   const first = new Date(year, month, 1);
-  const startWeekday = (first.getDay() + 6) % 7;
-  const daysInMonth = new Date(year, month+1, 0).getDate();
+  const startWd = (first.getDay() + 6) % 7;
+  const daysInM = new Date(year, month + 1, 0).getDate();
   const prevDays = new Date(year, month, 0).getDate();
-  const tasks = getFilteredTasks();
+  const tasks = filtered();
+
   const cells = [];
-  for(let i=0;i<42;i++){
-    let dayNum, cellDate, muted=false;
-    if(i < startWeekday){
-      dayNum = prevDays - startWeekday + i + 1;
-      const d = new Date(year, month-1, dayNum);
-      cellDate = d.toISOString().slice(0,10);
-      muted = true;
-    } else if(i >= startWeekday + daysInMonth){
-      dayNum = i - startWeekday - daysInMonth + 1;
-      const d = new Date(year, month+1, dayNum);
-      cellDate = d.toISOString().slice(0,10);
-      muted = true;
+  for (let i = 0; i < 42; i++) {
+    let dayNum, cellDate, muted = false;
+    if (i < startWd) {
+      dayNum = prevDays - startWd + i + 1;
+      cellDate = localKey(new Date(year, month - 1, dayNum)); muted = true;
+    } else if (i >= startWd + daysInM) {
+      dayNum = i - startWd - daysInM + 1;
+      cellDate = localKey(new Date(year, month + 1, dayNum)); muted = true;
     } else {
-      dayNum = i - startWeekday + 1;
-      const d = new Date(year, month, dayNum);
-      cellDate = d.toISOString().slice(0,10);
+      dayNum = i - startWd + 1;
+      cellDate = localKey(new Date(year, month, dayNum));
     }
     const dayTasks = tasks.filter(t => {
-      const s = t.start_date || t.due_date || cellDate;
-      const e = t.due_date || t.start_date || cellDate;
+      const s = t.start_date||t.due_date||cellDate;
+      const e = t.due_date||t.start_date||cellDate;
       return s <= cellDate && e >= cellDate;
-    }).slice(0,4);
+    }).slice(0, 4);
     const isToday = cellDate === todayIso();
     cells.push(`
-      <div class="day-card ${isToday ? 'today' : ''}" style="${muted ? 'opacity:.45' : ''}">
-        <div class="day-number">${dayNum}</div>
-        ${dayTasks.map(t => `<span class="day-chip priority-${escapeHtml(t.priority)}" data-open-task="${escapeHtml(t.task_id)}" data-tooltip-task="${escapeHtml(t.task_id)}">${escapeHtml(t.title)}</span>`).join('')}
+      <div class="day-card${isToday?' today':''}" style="${muted?'opacity:.4':''}">
+        <div class="day-num">${dayNum}</div>
+        ${dayTasks.map(t => {
+          const pColor = projColor(t.project_id);
+          return `<span class="day-chip" data-open="${escHtml(t.task_id)}" data-tt="${escHtml(t.task_id)}"
+            style="background:${pColor}22;color:${pColor};border-left:3px solid ${pColor}"
+          >${escHtml(projNameShort(t.project_id))}: ${escHtml(t.title)}</span>`;
+        }).join('')}
       </div>
     `);
   }
 
-  const monthLabel = new Date(year, month, 1).toLocaleDateString('es-PY', {month:'long', year:'numeric'});
+  const monthLabel = first.toLocaleDateString('es-PY', { month:'long', year:'numeric' });
   const agenda = tasks
-    .filter(t => {
-      const s = t.start_date || t.due_date || '';
-      return s.startsWith(`${year}-${String(month+1).padStart(2,'0')}`);
-    })
+    .filter(t => (t.start_date||'').startsWith(`${year}-${String(month+1).padStart(2,'0')}`))
     .sort((a,b) => (a.start_date||'').localeCompare(b.start_date||''))
     .slice(0, 20);
 
-  target.innerHTML = `
+  const mStart = `${year}-${String(month+1).padStart(2,'0')}-01`;
+  const mEnd   = `${year}-${String(month+1).padStart(2,'0')}-${String(daysInM).padStart(2,'0')}`;
+  const projsInMonth = [...new Set(tasks.filter(t => {
+    const s=t.start_date||t.due_date||''; const e=t.due_date||t.start_date||'';
+    return (!e||e>=mStart) && (!s||s<=mEnd);
+  }).map(t=>t.project_id))];
+
+  qs('tab-calendar').innerHTML = `
     <div class="calendar-shell">
-      <div class="calendar-month">
-        <div class="calendar-head">
-          <div>
-            <div class="timeline-title">Calendario del proyecto</div>
-            <div class="timeline-subtitle">Vista mensual vinculada al cronograma y a los proyectos accesibles</div>
-          </div>
-          <div style="display:flex;gap:8px;align-items:center">
-            <button class="btn ghost" id="btn-prev-month">◀</button>
-            <strong style="text-transform:capitalize">${escapeHtml(monthLabel)}</strong>
-            <button class="btn ghost" id="btn-next-month">▶</button>
+      <div class="card">
+        <div class="cal-header">
+          <div class="cal-title">${escHtml(monthLabel)}</div>
+          <div class="cal-nav">
+            <button class="btn ghost sm" id="cal-prev">◀</button>
+            <button class="btn ghost sm" id="cal-today">Hoy</button>
+            <button class="btn ghost sm" id="cal-next">▶</button>
           </div>
         </div>
-        <div class="calendar-grid">
-          ${['L','M','X','J','V','S','D'].map(d => `<div class="weekday">${d}</div>`).join('')}
+        <div class="proj-legend">
+          ${projsInMonth.map(pid => {
+            const p=state.app.projects.find(x=>x.project_id===pid);
+            const pc=p?.color||'#0f3d1d';
+            return `<span class="proj-pill" data-proj-id="${escHtml(pid)}"
+              style="border-color:${pc};color:${pc}"
+              title="${escHtml(p?.project_name||pid)}">
+              <span class="proj-dot" style="background:${pc}"></span>
+              ${escHtml(projNameShort(pid))}
+            </span>`;
+          }).join('')}
+        </div>
+        <div class="cal-grid">
+          ${['Lu','Ma','Mi','Ju','Vi','Sá','Do'].map(d=>`<div class="weekday">${d}</div>`).join('')}
           ${cells.join('')}
         </div>
       </div>
       <div class="stack">
         <div class="card">
-          <div class="timeline-title">Agenda del mes</div>
-          <div class="timeline-subtitle">Tareas iniciadas durante el mes seleccionado</div>
-          <div class="agenda-list">
-            ${agenda.map(t => `
-              <div class="agenda-item" data-open-task="${escapeHtml(t.task_id)}" data-tooltip-task="${escapeHtml(t.task_id)}">
-                <div><strong>${escapeHtml(t.title)}</strong></div>
-                <div class="muted small">${escapeHtml(getProjectName(t.project_id))} · ${escapeHtml(t.start_date || '')} a ${escapeHtml(t.due_date || '')}</div>
-                <div class="muted small">${escapeHtml(t.assignee_name || getUserName(t.assignee_user_id) || 'Sin asignar')} · ${escapeHtml(t.status)} · ${escapeHtml(t.priority)}</div>
-              </div>
-            `).join('') || '<div class="agenda-item">Sin eventos en el mes.</div>'}
-          </div>
+          <div class="section-title">📊 Línea de tiempo por proyecto</div>
+          <div class="section-sub" style="margin-bottom:10px">Tareas del mes · rojo = atrasada · hover para detalles</div>
+          ${renderCalMiniGantt(year, month, tasks)}
         </div>
         <div class="card">
-          <div class="timeline-title">Utilidad práctica</div>
-          <div class="timeline-subtitle">La vista calendario facilita reuniones de seguimiento, revisión de hitos, coordinación entre equipos y control de vencimientos.</div>
-          <ul class="muted" style="margin:10px 0 0 18px;line-height:1.6">
-            <li>Las tareas pueden abrirse para edición con doble clic desde cronograma y clic desde calendario.</li>
-            <li>Los proyectos se segregan por membresía, por lo que cada equipo visualiza solo lo que le corresponde.</li>
-            <li>Las fotos y documentos adjuntos quedan archivados en Drive y vinculados a cada tarea.</li>
-          </ul>
+          <div class="section-title">📋 Agenda del mes</div>
+          <div class="section-sub">Tareas que inician en ${escHtml(monthLabel)}</div>
+          <div class="agenda-list" style="margin-top:10px">
+            ${agenda.map(t => `
+              <div class="agenda-item" data-open="${escHtml(t.task_id)}" data-tt="${escHtml(t.task_id)}">
+                <div style="display:flex;align-items:center;gap:7px">
+                  <span style="width:8px;height:8px;border-radius:50%;flex-shrink:0;display:inline-block;background:${escHtml(projColor(t.project_id))}"></span>
+                  <strong>${escHtml(t.title)}</strong>
+                </div>
+                <div class="muted small">${escHtml(projNameShort(t.project_id))} · ${escHtml(fmtDate(t.start_date))} → ${escHtml(fmtDate(t.due_date))}</div>
+                <div style="margin-top:4px">
+                  <span class="badge status-${normalClass(t.status)}">${escHtml(t.status)}</span>
+                  <span class="badge priority-${normalClass(t.priority)}" style="margin-left:4px">${escHtml(t.priority)}</span>
+                </div>
+              </div>
+            `).join('') || '<div class="empty-state" style="padding:20px 0"><div class="empty-icon">📆</div><div class="empty-text">Sin eventos en este mes.</div></div>'}
+          </div>
         </div>
       </div>
     </div>
   `;
-  qs('btn-prev-month').onclick = () => {
-    state.calendar.month -= 1;
-    if(state.calendar.month < 0){ state.calendar.month = 11; state.calendar.year -= 1; }
-    renderCalendar();
-  };
-  qs('btn-next-month').onclick = () => {
-    state.calendar.month += 1;
-    if(state.calendar.month > 11){ state.calendar.month = 0; state.calendar.year += 1; }
-    renderCalendar();
-  };
-  bindOpenTaskLinks();
-  attachTooltip();
+  qs('cal-prev').onclick = () => { state.calendar.month--; if (state.calendar.month<0){state.calendar.month=11;state.calendar.year--;} renderCalendar(); };
+  qs('cal-next').onclick = () => { state.calendar.month++; if (state.calendar.month>11){state.calendar.month=0;state.calendar.year++;} renderCalendar(); };
+  qs('cal-today').onclick = () => { const n=new Date(); state.calendar.month=n.getMonth(); state.calendar.year=n.getFullYear(); renderCalendar(); };
+  qsa('.proj-pill').forEach(pill => {
+    pill.onclick = () => {
+      const pid = pill.getAttribute('data-proj-id');
+      state.filters.project = state.filters.project===pid ? '' : pid;
+      qs('filter-project').value = state.filters.project;
+      renderCalendar();
+    };
+  });
+  bindOpenTask();
+  attachTooltips('[data-tt]');
 }
-function renderTeam(){
-  const target = qs('tab-team');
+
+/* ═══════════════════════════════════════
+   RENDER: TEAM
+═══════════════════════════════════════ */
+function renderTeam() {
+  const all = state.app.tasks;
+  const kanbanCols = [
+    { label:'📋 Pendiente',  statuses:['Pendiente'] },
+    { label:'🔵 En curso',   statuses:['En curso','Bloqueada','Atrasada'] },
+    { label:'✅ Completada', statuses:['Completada','Cancelada'] }
+  ];
   const memberships = state.app.memberships;
   const grouped = {};
   memberships.forEach(m => {
-    if(!grouped[m.project_id]) grouped[m.project_id] = [];
+    if (!grouped[m.project_id]) grouped[m.project_id] = [];
     grouped[m.project_id].push(m);
   });
-  // Kanban
-  const allTasks = state.app.tasks;
-  const kanbanCols = [
-    {label:'📋 Pendiente', statuses:['Pendiente']},
-    {label:'🔵 En curso',  statuses:['En curso','Bloqueada','Atrasada']},
-    {label:'✅ Completada',statuses:['Completada','Cancelada']}
-  ];
-  const kanbanHtml = `
-    <div class="card" style="grid-column:span 2">
-      <div class="timeline-title">Tablero Kanban del proyecto</div>
-      <div class="timeline-subtitle">Vista de columnas por estado para todos los proyectos accesibles</div>
-      <div class="kanban-wrap">
-        ${kanbanCols.map(col => `
-          <div class="kanban-col">
-            <div class="kanban-col-title">${col.label} <span style="font-weight:400;color:#4d6658">(${allTasks.filter(t=>col.statuses.includes(t.status)).length})</span></div>
-            ${allTasks.filter(t=>col.statuses.includes(t.status)).slice(0,20).map(t => `
-              <div class="kanban-card" data-open-task="${escapeHtml(t.task_id)}">
-                <div class="k-title">${escapeHtml(t.title)}</div>
-                <div class="k-meta">${escapeHtml(getProjectName(t.project_id))} · ${escapeHtml(t.assignee_name||getUserName(t.assignee_user_id)||'Sin asignar')}</div>
-                <div style="height:4px;background:#e2e8f0;border-radius:99px;overflow:hidden;margin-top:6px"><div style="height:100%;background:#15803d;width:${t.progress||0}%"></div></div>
-              </div>
-            `).join('') || '<div class="muted small" style="padding:8px">Sin tareas.</div>'}
-          </div>
-        `).join('')}
-      </div>
-    </div>
-  `;
-  target.innerHTML = `
-    <div class="team-grid">
-      ${kanbanHtml}
+
+  qs('tab-team').innerHTML = `
+    <div class="stack">
       <div class="card">
-        <div class="timeline-title">Equipos por proyecto</div>
-        <div class="timeline-subtitle">Los usuarios comparten tareas y seguimiento cuando forman parte del mismo proyecto</div>
-        <div class="activity-list">
-          ${state.app.projects.map(p => `
-            <div class="activity-item">
-              <div style="display:flex;justify-content:space-between;gap:8px;align-items:center">
-                <div>
-                  <div><strong>${escapeHtml(p.project_name)}</strong></div>
-                  <div class="muted small">${escapeHtml(p.description || '')}</div>
+        <div class="section-header">
+          <div>
+            <div class="section-title">🗂 Tablero Kanban</div>
+            <div class="section-sub">Vista de columnas por estado · todos los proyectos accesibles</div>
+          </div>
+        </div>
+        <div class="kanban-wrap">
+          ${kanbanCols.map(col => `
+            <div class="kanban-col">
+              <div class="kanban-col-title">${col.label} <span class="muted">(${all.filter(t=>col.statuses.includes(t.status)).length})</span></div>
+              ${all.filter(t=>col.statuses.includes(t.status)).slice(0,25).map(t => `
+                <div class="kanban-card" data-open="${escHtml(t.task_id)}">
+                  <div class="k-title">${escHtml(t.title)}</div>
+                  <div class="k-meta">${escHtml(projName(t.project_id))} · ${escHtml(t.assignee_name||userName(t.assignee_user_id)||'Sin asignar')}</div>
+                  <div style="display:flex;align-items:center;gap:6px;margin-top:7px">
+                    <div class="prog-wrap" style="flex:1"><div class="prog-fill green" style="width:${t.progress||0}%"></div></div>
+                    <span class="muted small">${t.progress||0}%</span>
+                    <span class="badge priority-${normalClass(t.priority)}">${escHtml(t.priority)}</span>
+                  </div>
                 </div>
-                <button class="btn ghost" data-open-membership="${escapeHtml(p.project_id)}">Agregar integrante</button>
-              </div>
-              <div style="margin-top:10px">
-                ${(grouped[p.project_id] || []).map(m => `
-                  <span class="badge">${escapeHtml(getUserName(m.user_id))} · ${escapeHtml(m.role)}</span>
-                `).join('') || '<span class="muted small">Sin integrantes.</span>'}
-              </div>
+              `).join('') || '<div class="muted small" style="padding:8px">Sin tareas.</div>'}
             </div>
           `).join('')}
         </div>
       </div>
+      <div class="team-grid">
+        <div class="card">
+          <div class="section-title">🏢 Equipos por proyecto</div>
+          <div class="section-sub" style="margin-bottom:12px">Membresías y roles</div>
+          <div class="activity-list">
+            ${state.app.projects.map(p => `
+              <div class="activity-item">
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+                  <div>
+                    <div><strong>${escHtml(p.project_name)}</strong></div>
+                    <div class="muted small">${escHtml(p.description||'')}</div>
+                  </div>
+                  <button class="btn ghost sm" data-add-member="${escHtml(p.project_id)}">+ Integrante</button>
+                </div>
+                <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px">
+                  ${(grouped[p.project_id]||[]).map(m =>
+                    `<span class="badge">${escHtml(userName(m.user_id))} <span class="muted">· ${escHtml(m.role)}</span></span>`
+                  ).join('') || '<span class="muted small">Sin integrantes.</span>'}
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+        <div class="card">
+          <div class="section-title">📊 Carga operativa</div>
+          <div class="section-sub" style="margin-bottom:12px">Detalle por responsable</div>
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr><th>Usuario</th><th>Abiertas</th><th>Urgentes</th><th>Completadas</th></tr></thead>
+              <tbody>
+                ${state.app.users.map(u => {
+                  const uTasks = all.filter(t =>
+                    t.assignee_user_id === u.user_id ||
+                    (!t.assignee_user_id && (t.assignee_name||'').toLowerCase() === (u.display_name||'').toLowerCase()));
+                  const open  = uTasks.filter(t => !['Completada','Cancelada'].includes(t.status)).length;
+                  const urg   = uTasks.filter(t => t.urgent).length;
+                  const done  = uTasks.filter(t => t.status==='Completada').length;
+                  return `<tr><td>${escHtml(u.display_name)}</td><td>${open}</td><td>${urg}</td><td>${done}</td></tr>`;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  bindOpenTask();
+  qsa('[data-add-member]').forEach(btn => {
+    btn.onclick = async () => {
+      const pid = btn.getAttribute('data-add-member');
+      const opts = state.app.users.map(u => `${u.user_id} | ${u.display_name}`).join('\n');
+      const raw = prompt(`User ID a incorporar a ${projName(pid)}:\n\n${opts}`);
+      if (!raw) return;
+      const userId = raw.split('|')[0].trim();
+      const role = prompt('Rol (admin, manager, member)', 'member') || 'member';
+      try {
+        await api('saveMembership', state.token, { project_id:pid, user_id:userId, role });
+        await refreshData();
+        toast('Integrante agregado.');
+      } catch(err) { toast(err.message, true); }
+    };
+  });
+}
+
+/* ═══════════════════════════════════════
+   RENDER: ARCHIVOS
+═══════════════════════════════════════ */
+function renderFiles() {
+  const atts  = state.app.attachments.slice().reverse();
+  const comms = state.app.comments.slice().reverse().slice(0, 30);
+  qs('tab-files').innerHTML = `
+    <div class="files-grid">
       <div class="card">
-        <div class="timeline-title">Carga operativa por usuario</div>
-        <div class="timeline-subtitle">Seguimiento cruzado entre responsables dentro del mismo proyecto</div>
+        <div class="section-title">📎 Centro documental</div>
+        <div class="section-sub" style="margin-bottom:12px">Adjuntos cargados desde la app, vinculados a tareas</div>
+        <div class="attachment-list">
+          ${atts.map(a => `
+            <div class="attachment-item">
+              <div><strong>${escHtml(a.file_name)}</strong></div>
+              <div class="muted small">${escHtml(a.mime_type||'')} · ${escHtml(a.uploaded_by||'')} · ${escHtml(a.uploaded_at||'')}</div>
+              <div class="muted small">Tarea: ${escHtml((state.app.tasks.find(t=>t.task_id===a.task_id)||{}).title||a.task_id)}</div>
+              <div style="margin-top:8px"><a href="${escHtml(a.file_url)}" target="_blank">↗ Abrir en Drive</a></div>
+            </div>
+          `).join('') || '<div class="empty-state" style="padding:30px 0"><div class="empty-icon">📂</div><div class="empty-text">No hay archivos adjuntos aún.</div></div>'}
+        </div>
+      </div>
+      <div class="card">
+        <div class="section-title">💬 Bitácora de comentarios</div>
+        <div class="section-sub" style="margin-bottom:12px">Registro de observaciones por tarea</div>
+        <div class="comment-list">
+          ${comms.map(c => `
+            <div class="comment-item">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <strong>${escHtml(c.author_name)}</strong>
+                <span class="muted small" style="font-family:'DM Mono',monospace">${escHtml(c.created_at||'')}</span>
+              </div>
+              <div class="muted small">${escHtml((state.app.tasks.find(t=>t.task_id===c.task_id)||{}).title||c.task_id)}</div>
+              <div style="margin-top:6px">${escHtml(c.message)}</div>
+            </div>
+          `).join('') || '<div class="empty-state" style="padding:30px 0"><div class="empty-icon">💬</div><div class="empty-text">Sin comentarios registrados.</div></div>'}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/* ═══════════════════════════════════════
+   RENDER: ACTIVIDAD (nueva sección)
+═══════════════════════════════════════ */
+function renderActivity() {
+  // Recent tasks sorted by updated_at
+  const recent = state.app.tasks.slice()
+    .sort((a,b) => (b.updated_at||'').localeCompare(a.updated_at||''))
+    .slice(0, 40);
+
+  const logIcons = { create:'🟢', update:'🔵', delete:'🔴', auth:'🟡' };
+
+  qs('tab-activity').innerHTML = `
+    <div class="dash-grid">
+      <div class="card">
+        <div class="section-title">🕒 Tareas actualizadas recientemente</div>
+        <div class="section-sub" style="margin-bottom:14px">Ordenadas por última modificación</div>
         <div class="table-wrap">
           <table class="table">
-            <thead><tr><th>Usuario</th><th>Abiertas</th><th>Urgentes</th><th>Completadas</th></tr></thead>
+            <thead><tr><th>Tarea</th><th>Proyecto</th><th>Estado</th><th>Avance</th><th>Actualizado</th></tr></thead>
             <tbody>
-              ${state.app.users.map(u => {
-                const all = state.app.tasks.filter(t => t.assignee_user_id === u.user_id || (!t.assignee_user_id && (t.assignee_name||'').toLowerCase() === (u.display_name||'').toLowerCase()));
-                const open = all.filter(t => !['Completada','Cancelada'].includes(t.status)).length;
-                const urgent = all.filter(t => t.urgent).length;
-                const done = all.filter(t => t.status === 'Completada').length;
-                return `<tr><td>${escapeHtml(u.display_name)}</td><td>${open}</td><td>${urgent}</td><td>${done}</td></tr>`;
-              }).join('')}
+              ${recent.map(t => `
+                <tr data-open="${escHtml(t.task_id)}">
+                  <td><span class="type-chip ${escHtml(t.type)}">${escHtml(t.type)}</span> ${escHtml(t.title)}</td>
+                  <td class="muted">${escHtml(projName(t.project_id))}</td>
+                  <td><span class="badge status-${normalClass(t.status)}">${escHtml(t.status)}</span></td>
+                  <td>
+                    <div style="display:flex;align-items:center;gap:6px">
+                      <div class="prog-wrap" style="width:56px"><div class="prog-fill green" style="width:${t.progress||0}%"></div></div>
+                      <span class="muted small">${t.progress||0}%</span>
+                    </div>
+                  </td>
+                  <td class="muted small" style="font-family:'DM Mono',monospace;font-size:11px">${escHtml(t.updated_at||'—')}</td>
+                </tr>
+              `).join('') || '<tr><td colspan="5" class="muted" style="text-align:center">Sin actividad registrada.</td></tr>'}
             </tbody>
           </table>
         </div>
       </div>
-    </div>
-  `;
-  document.querySelectorAll('[data-open-membership]').forEach(btn => {
-    btn.onclick = async () => {
-      const projectId = btn.getAttribute('data-open-membership');
-      const options = state.app.users.map(u => `${u.user_id} | ${u.display_name}`).join('\n');
-      const raw = prompt(`Ingrese el user_id a incorporar al proyecto ${getProjectName(projectId)}\n\n${options}`);
-      if(!raw) return;
-      const userId = raw.split('|')[0].trim();
-      const role = prompt('Rol dentro del proyecto (admin, manager, member)', 'member') || 'member';
-      try{
-        await api('saveMembership', state.token, {project_id: projectId, user_id: userId, role});
-        await refreshData();
-        showToast('Integrante agregado al proyecto.');
-      }catch(err){ showToast(err.message, true); }
-    };
-  });
-}
-function renderFiles(){
-  const target = qs('tab-files');
-  const attachments = state.app.attachments.slice().reverse();
-  target.innerHTML = `
-    <div class="files-grid">
-      <div class="card">
-        <div class="timeline-title">Centro documental</div>
-        <div class="timeline-subtitle">Adjuntos cargados desde la aplicación, incluyendo fotos capturadas desde el dispositivo</div>
-        <div class="attachment-list">
-          ${attachments.map(a => `
-            <div class="attachment-item">
-              <div><strong>${escapeHtml(a.file_name)}</strong></div>
-              <div class="muted small">${escapeHtml(a.mime_type || '')} · ${escapeHtml(a.uploaded_by || '')} · ${escapeHtml(a.uploaded_at || '')}</div>
-              <div class="muted small">Tarea: ${escapeHtml((state.app.tasks.find(t => t.task_id === a.task_id) || {}).title || a.task_id)}</div>
-              <div style="margin-top:8px"><a href="${escapeHtml(a.file_url)}" target="_blank">Abrir en Drive</a></div>
-            </div>
-          `).join('') || '<div class="attachment-item">No existen adjuntos cargados todavía.</div>'}
+      <div class="stack">
+        <div class="card">
+          <div class="section-title">📈 Resumen de estado</div>
+          <div class="section-sub" style="margin-bottom:14px">Distribución de tareas por estado</div>
+          ${['Pendiente','En curso','Bloqueada','Atrasada','Completada','Cancelada'].map(st => {
+            const count = state.app.tasks.filter(t => t.status === st).length;
+            const pct   = state.app.tasks.length ? Math.round((count/state.app.tasks.length)*100) : 0;
+            return `
+              <div style="margin-bottom:10px">
+                <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+                  <span class="badge status-${normalClass(st)}">${escHtml(st)}</span>
+                  <span class="muted small">${count} · ${pct}%</span>
+                </div>
+                <div class="prog-wrap"><div class="prog-fill green" style="width:${pct}%"></div></div>
+              </div>
+            `;
+          }).join('')}
         </div>
-      </div>
-      <div class="card">
-        <div class="timeline-title">Comentarios recientes</div>
-        <div class="timeline-subtitle">Bitácora breve de observaciones por tarea</div>
-        <div class="comment-list">
-          ${state.app.comments.slice().reverse().slice(0, 30).map(c => `
-            <div class="comment-item">
-              <div><strong>${escapeHtml(c.author_name)}</strong> · ${escapeHtml(c.created_at)}</div>
-              <div class="muted small">${escapeHtml((state.app.tasks.find(t => t.task_id === c.task_id) || {}).title || c.task_id)}</div>
-              <div style="margin-top:6px">${escapeHtml(c.message)}</div>
-            </div>
-          `).join('') || '<div class="comment-item">Sin comentarios registrados.</div>'}
+        <div class="card">
+          <div class="section-title">🗂 Distribución por tipo</div>
+          <div class="section-sub" style="margin-bottom:14px">Clasificación jerárquica de tareas</div>
+          ${['Tema','Subtema','Actividad','Hito'].map(tp => {
+            const count = state.app.tasks.filter(t => t.type === tp).length;
+            const pct   = state.app.tasks.length ? Math.round((count/state.app.tasks.length)*100) : 0;
+            return `
+              <div style="margin-bottom:10px">
+                <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+                  <span class="type-chip ${escHtml(tp)}">${escHtml(tp)}</span>
+                  <span class="muted small">${count} · ${pct}%</span>
+                </div>
+                <div class="prog-wrap"><div class="prog-fill ${tp==='Hito'?'teal':'green'}" style="width:${pct}%"></div></div>
+              </div>
+            `;
+          }).join('')}
         </div>
       </div>
     </div>
   `;
+  bindOpenTask();
 }
-function renderSettings(){
-  const target = qs('tab-settings');
+
+/* ═══════════════════════════════════════
+   RENDER: SETTINGS
+═══════════════════════════════════════ */
+function renderSettings() {
   const isAdmin = state.app.session.role === 'admin';
-  target.innerHTML = `
+  qs('tab-settings').innerHTML = `
     <div class="settings-grid">
       <div class="card">
-        <div class="timeline-title">Proyectos</div>
-        <div class="timeline-subtitle">Alta y mantenimiento del portafolio</div>
-        <div style="margin:12px 0 16px">
-          <button class="btn primary" id="btn-open-project-modal">Nuevo proyecto</button>
-        </div>
+        <div class="section-title">📂 Proyectos</div>
+        <div class="section-sub" style="margin-bottom:12px">Alta y mantenimiento del portafolio</div>
+        <button class="btn primary sm" id="btn-open-project-modal" style="margin-bottom:14px">+ Nuevo proyecto</button>
         <div class="activity-list">
           ${state.app.projects.map(p => `
-            <div class="activity-item">
-              <div style="display:flex;justify-content:space-between;gap:8px">
+            <div class="activity-item" data-edit-project="${escHtml(p.project_id)}" style="cursor:pointer">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
                 <div>
-                  <div><strong>${escapeHtml(p.project_name)}</strong></div>
-                  <div class="muted small">${escapeHtml(p.description || '')}</div>
-                  <div class="muted small">${escapeHtml(p.start_date || '')} a ${escapeHtml(p.end_date || '')}</div>
+                  <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${escHtml(p.color||'#0f3d1d')};margin-right:6px;vertical-align:middle"></span>
+                  <strong>${escHtml(p.project_name)}</strong>
                 </div>
-                <div><span class="badge">${escapeHtml(p.status || 'Activo')}</span></div>
+                <span class="badge status-${normalClass(p.status||'Activo')}">${escHtml(p.status||'Activo')}</span>
               </div>
+              <div class="muted small" style="margin-top:4px">${escHtml(p.description||'')} &nbsp;·&nbsp; ${escHtml(p.start_date||'')} → ${escHtml(p.end_date||'')}</div>
             </div>
           `).join('')}
         </div>
       </div>
       <div class="card">
-        <div class="timeline-title">Usuarios</div>
-        <div class="timeline-subtitle">Gestión de acceso y autenticación interna de la aplicación</div>
-        <div style="margin:12px 0 16px">
-          ${isAdmin ? '<button class="btn primary" id="btn-open-user-modal">Nuevo usuario</button>' : '<div class="muted small">Solo el administrador puede crear o editar usuarios.</div>'}
-        </div>
+        <div class="section-title">👤 Usuarios</div>
+        <div class="section-sub" style="margin-bottom:12px">Acceso y autenticación interna</div>
+        ${isAdmin
+          ? '<button class="btn primary sm" id="btn-open-user-modal" style="margin-bottom:14px">+ Nuevo usuario</button>'
+          : '<div class="muted small" style="margin-bottom:14px">Solo el administrador puede gestionar usuarios.</div>'}
         <div class="table-wrap">
           <table class="table">
             <thead><tr><th>Usuario</th><th>Nombre</th><th>Rol</th><th>Activo</th></tr></thead>
             <tbody>
               ${state.app.users.map(u => `
-                <tr>
-                  <td>${escapeHtml(u.username)}</td>
-                  <td>${escapeHtml(u.display_name)}</td>
-                  <td>${escapeHtml(u.role)}</td>
-                  <td>${u.active === false || String(u.active).toUpperCase() === 'FALSE' ? 'No' : 'Sí'}</td>
+                <tr ${isAdmin ? `data-edit-user="${escHtml(u.user_id)}" style="cursor:pointer"` : ''}>
+                  <td style="font-family:'DM Mono',monospace;font-size:12px">${escHtml(u.username)}</td>
+                  <td>${escHtml(u.display_name)}</td>
+                  <td><span class="badge">${escHtml(u.role)}</span></td>
+                  <td>${u.active===false||String(u.active).toUpperCase()==='FALSE' ? '❌' : '✅'}</td>
                 </tr>
               `).join('')}
             </tbody>
           </table>
         </div>
       </div>
+      ${renderTeamPhotos()}
     </div>
   `;
-  const btnProject = qs('btn-open-project-modal');
-  if(btnProject) btnProject.onclick = () => showModal('project-modal');
-  const btnUser = qs('btn-open-user-modal');
-  if(btnUser) btnUser.onclick = () => showModal('user-modal');
-}
-function bindOpenTaskLinks(){
-  document.querySelectorAll('[data-open-task]').forEach(el => {
-    el.onclick = async () => openTask(el.getAttribute('data-open-task'));
-    el.ondblclick = async ev => { ev.preventDefault(); await openTask(el.getAttribute('data-open-task')); };
+  const bp = qs('btn-open-project-modal');
+  if (bp) bp.onclick = () => {
+    qs('project-form').reset(); qs('project-id').value=''; qs('project-color').value='#0f3d1d';
+    openModal('project-modal');
+  };
+  const bu = qs('btn-open-user-modal');
+  if (bu) bu.onclick = () => { qs('user-form').reset(); qs('user-id').value=''; openModal('user-modal'); };
+  qsa('[data-edit-project]').forEach(el => {
+    el.onclick = () => {
+      const p = state.app.projects.find(x => x.project_id === el.getAttribute('data-edit-project'));
+      if (!p) return;
+      qs('project-id').value = p.project_id;
+      qs('project-name').value = p.project_name||'';
+      qs('project-description').value = p.description||'';
+      qs('project-start').value = p.start_date||'';
+      qs('project-end').value = p.end_date||'';
+      qs('project-color').value = p.color||'#0f3d1d';
+      openModal('project-modal');
+    };
   });
+  qsa('[data-edit-user]').forEach(el => {
+    el.onclick = () => {
+      const u = state.app.users.find(x => x.user_id === el.getAttribute('data-edit-user'));
+      if (!u) return;
+      qs('user-id').value = u.user_id;
+      qs('user-username').value = u.username||'';
+      qs('user-password').value = '';
+      qs('user-display-name').value = u.display_name||'';
+      qs('user-email').value = u.email||'';
+      qs('user-role').value = u.role||'member';
+      qs('user-active').value = (u.active===false||String(u.active).toUpperCase()==='FALSE') ? 'false' : 'true';
+      openModal('user-modal');
+    };
+  });
+  bindPhotoUploads();
 }
-async function openTask(taskId){
-  try{
-    const detail = await api('getTaskDetail', state.token, taskId);
-    const t = detail.task;
-    qs('task-modal-title').textContent = `Editar tarea · ${t.title}`;
-    qs('task-id').value = t.task_id;
-    qs('task-project').value = t.project_id;
-    qs('task-type').value = t.type || 'Actividad';
-    qs('task-status').value = t.status || 'Pendiente';
-    qs('task-priority').value = t.priority || 'Media';
-    qs('task-title').value = t.title || '';
-    qs('task-start').value = t.start_date || '';
-    qs('task-due').value = t.due_date || '';
-    qs('task-progress').value = t.progress || 0;
-    qs('task-work-path').value = t.work_path || '';
-    qs('task-folder-url').value = t.folder_url || '';
-    qs('task-description').value = t.description || '';
-    qs('task-tags').value = t.tags || '';
-    qs('task-estimated-hours').value = t.estimated_hours || '';
-    qs('task-actual-hours').value = t.actual_hours || '';
-    qs('task-dependencies').value = t.dependency_ids || '';
-    qs('task-comment').value = '';
-    fillTaskParentOptions(t.project_id, t.task_id);
-    qs('task-parent').value = t.parent_id || '';
-    qs('task-assignee').value = t.assignee_user_id || '';
-    qs('btn-delete-task').classList.remove('hidden');
 
-    qs('task-detail-side').innerHTML = `
-      <div class="timeline-title">Detalle operativo</div>
-      <div class="timeline-subtitle">Información ampliada, adjuntos y comentarios</div>
-      <div style="margin-top:12px" class="attachment-list">
-        ${(detail.attachments || []).map(a => `
-          <div class="attachment-item">
-            <div><strong>${escapeHtml(a.file_name)}</strong></div>
-            <div class="muted small">${escapeHtml(a.mime_type || '')} · ${escapeHtml(a.uploaded_by || '')}</div>
-            <div style="margin-top:8px"><a href="${escapeHtml(a.file_url)}" target="_blank">Abrir en Drive</a></div>
-          </div>
-        `).join('') || '<div class="attachment-item">Sin adjuntos.</div>'}
+/* ═══════════════════════════════════════
+   TASK MODAL — abre inmediatamente con datos locales,
+   luego carga adjuntos/comentarios en background
+═══════════════════════════════════════ */
+async function openTask(taskId) {
+  // 1. Buscar en cache local (sin esperar red)
+  const tLocal = state.app.tasks.find(x => x.task_id === taskId);
+  if (!tLocal) { toast('Tarea no encontrada.', true); return; }
+
+  // 2. Poblar formulario inmediatamente
+  _fillTaskForm(tLocal);
+
+  // 3. Mostrar modal ya — el usuario puede editar mientras cargan los detalles
+  qs('task-detail-side').innerHTML = `
+    <div class="section-title" style="margin-bottom:10px">📎 Adjuntos & comentarios</div>
+    <div class="skeleton" style="height:40px;margin-bottom:8px"></div>
+    <div class="skeleton" style="height:40px;margin-bottom:8px"></div>
+    <div class="skeleton" style="height:60px"></div>
+  `;
+  openModal('task-modal');
+
+  // 4. Cargar adjuntos y comentarios en background (sin bloquear)
+  try {
+    const detail = await api('getTaskDetail', state.token, taskId);
+    // Actualizar solo el panel lateral; no tocar el form que el usuario puede estar editando
+    const atts  = (detail.attachments||[]);
+    const comms = (detail.comments||[]).slice().reverse();
+    const attHtml = atts.map(a => `
+      <div class="attachment-item">
+        <div><strong>${escHtml(a.file_name)}</strong></div>
+        <div class="muted small">${escHtml(a.mime_type||'')} · ${escHtml(a.uploaded_by||'')}</div>
+        <div style="margin-top:6px"><a href="${escHtml(a.file_url)}" target="_blank">↗ Abrir en Drive</a></div>
       </div>
-      <div style="margin-top:14px" class="comment-list">
-        ${(detail.comments || []).slice().reverse().map(c => `
-          <div class="comment-item">
-            <div><strong>${escapeHtml(c.author_name)}</strong> · ${escapeHtml(c.created_at)}</div>
-            <div style="margin-top:6px">${escapeHtml(c.message)}</div>
-          </div>
-        `).join('') || '<div class="comment-item">Sin comentarios.</div>'}
+    `).join('') || '<div class="muted small">Sin adjuntos.</div>';
+    const commHtml = comms.map(c => `
+      <div class="comment-item">
+        <div style="display:flex;justify-content:space-between">
+          <strong>${escHtml(c.author_name)}</strong>
+          <span class="muted small">${escHtml(c.created_at||'')}</span>
+        </div>
+        <div style="margin-top:5px">${escHtml(c.message)}</div>
       </div>
-    `;
-    showModal('task-modal');
-  }catch(err){ showToast(err.message, true); }
+    `).join('') || '<div class="muted small">Sin comentarios.</div>';
+    // Solo actualizar si el modal sigue abierto con la misma tarea
+    if (qs('task-id').value === taskId) {
+      qs('task-detail-side').innerHTML = `
+        <div class="section-title" style="margin-bottom:10px">📎 Adjuntos & comentarios</div>
+        <div class="attachment-list" style="margin-bottom:12px">${attHtml}</div>
+        <div class="comment-list">${commHtml}</div>
+      `;
+    }
+  } catch (err) { /* silencioso — el form ya está abierto */ }
 }
-function fillTaskParentOptions(projectId, currentTaskId=''){
-  const options = ['<option value="">Sin padre</option>']
+
+function _fillTaskForm(t) {
+  qs('task-modal-title').textContent = `Editar · ${t.title}`;
+  qs('task-id').value = t.task_id;
+  qs('task-project').value = t.project_id;
+  qs('task-type').value = t.type||'Actividad';
+  qs('task-status').value = t.status||'Pendiente';
+  qs('task-priority').value = t.priority||'Media';
+  qs('task-title').value = t.title||'';
+  qs('task-start').value = t.start_date||'';
+  qs('task-due').value = t.due_date||'';
+  qs('task-progress').value = t.progress||0;
+  qs('task-work-path').value = t.work_path||'';
+  qs('task-folder-url').value = t.folder_url||'';
+  qs('task-description').value = t.description||'';
+  qs('task-tags').value = t.tags||'';
+  qs('task-estimated-hours').value = t.estimated_hours||'';
+  qs('task-actual-hours').value = t.actual_hours||'';
+  qs('task-dependencies').value = t.dependency_ids||'';
+  qs('task-comment').value = '';
+  qs('task-upload').value = '';
+  qs('upload-preview').src = ''; qs('upload-preview').style.display = 'none';
+  qs('upload-progress').classList.add('hidden');
+  fillParentOptions(t.project_id, t.task_id);
+  qs('task-parent').value = t.parent_id||'';
+  qs('task-assignee').value = t.assignee_user_id||'';
+  qs('btn-delete-task').classList.remove('hidden');
+}
+
+function fillParentOptions(projectId, currentId = '') {
+  const opts = ['<option value="">Sin padre</option>']
     .concat(state.app.tasks
-      .filter(t => t.project_id === projectId && t.task_id !== currentTaskId)
-      .map(t => `<option value="${escapeHtml(t.task_id)}">${escapeHtml(t.title)} (${escapeHtml(t.type)})</option>`));
-  qs('task-parent').innerHTML = options.join('');
+      .filter(t => t.project_id === projectId && t.task_id !== currentId)
+      .map(t => `<option value="${escHtml(t.task_id)}">${escHtml(t.title)} (${escHtml(t.type)})</option>`));
+  qs('task-parent').innerHTML = opts.join('');
 }
-function resetTaskForm(){
-  qs('task-form').reset();
-  qs('task-id').value = '';
+
+function resetTaskModal() {
+  qs('task-form').reset(); qs('task-id').value = '';
   qs('task-modal-title').textContent = 'Nueva tarea';
   qs('btn-delete-task').classList.add('hidden');
-  qs('task-detail-side').innerHTML = `
-    <div class="timeline-title">Edición operativa</div>
-    <div class="timeline-subtitle">Aquí aparecerán los adjuntos y comentarios una vez que la tarea haya sido creada.</div>
-  `;
-  const projectId = qs('task-project').value || (state.app.projects[0] ? state.app.projects[0].project_id : '');
-  if(projectId) fillTaskParentOptions(projectId);
+  qs('task-detail-side').innerHTML = `<div class="muted small">Adjuntos y comentarios aparecerán aquí una vez guardada la tarea.</div>`;
+  qs('upload-preview').src = ''; qs('upload-preview').style.display = 'none';
+  qs('upload-progress').classList.add('hidden');
+  const pid = qs('filter-project').value || (state.app.projects[0]?.project_id||'');
+  if (pid) { qs('task-project').value = pid; fillParentOptions(pid); }
 }
-async function saveTaskFromForm(){
-  try{
-    const taskId = qs('task-id').value;
-    const assigneeUserId = qs('task-assignee').value || '';
-    const assigneeName = assigneeUserId ? (state.app.users.find(u => u.user_id === assigneeUserId) || {}).display_name || '' : '';
+
+async function saveTask() {
+  try {
+    const tid = qs('task-id').value;
+    const uid = qs('task-assignee').value||'';
+    const uname = uid ? (state.app.users.find(u=>u.user_id===uid)||{}).display_name||'' : '';
     const payload = {
-      task_id: taskId || '',
-      project_id: qs('task-project').value,
-      type: qs('task-type').value,
-      status: qs('task-status').value,
-      priority: qs('task-priority').value,
-      title: qs('task-title').value,
+      task_id: tid||'', project_id: qs('task-project').value,
+      type: qs('task-type').value, status: qs('task-status').value,
+      priority: qs('task-priority').value, title: qs('task-title').value,
       parent_id: qs('task-parent').value,
       dependency_ids: qs('task-dependencies').value,
-      start_date: qs('task-start').value,
-      due_date: qs('task-due').value,
-      progress: Number(qs('task-progress').value || 0),
-      assignee_user_id: assigneeUserId,
-      assignee_name: assigneeName,
+      start_date: qs('task-start').value, due_date: qs('task-due').value,
+      progress: Number(qs('task-progress').value||0),
+      assignee_user_id: uid, assignee_name: uname,
       work_path: qs('task-work-path').value,
       folder_url: qs('task-folder-url').value,
       description: qs('task-description').value,
@@ -787,68 +1157,69 @@ async function saveTaskFromForm(){
       comment_message: qs('task-comment').value
     };
     const saved = await api('saveTask', state.token, payload);
-
     const fileInput = qs('task-upload');
-    if(fileInput.files && fileInput.files[0]){
+    if (fileInput.files?.length) {
       const f = fileInput.files[0];
-      const b64 = await fileToBase64(f);
-      await api('uploadAttachment', state.token, saved.task_id || saved.taskId || saved.task_id || payload.task_id || saved.task_id, f.name, f.type, b64);
+      qs('upload-progress').textContent = '⬆️ Subiendo…'; qs('upload-progress').classList.remove('hidden');
+      const b64 = await fileToB64(f);
+      await api('uploadAttachment', state.token, saved.task_id||payload.task_id, f.name, f.type, b64);
+      qs('upload-progress').classList.add('hidden');
     }
-
     closeModal('task-modal');
     await refreshData();
-    showToast(taskId ? 'Tarea actualizada.' : 'Tarea creada.');
-  }catch(err){ showToast(err.message, true); }
+    toast(tid ? '✅ Tarea actualizada.' : '✅ Tarea creada.');
+  } catch (err) { toast(err.message, true); }
 }
-function fileToBase64(file){
-  return new Promise((resolve, reject) => {
+
+function fileToB64(file) {
+  return new Promise((res, rej) => {
     const reader = new FileReader();
     reader.onload = ev => {
-      const res = String(ev.target.result || '');
-      // Mostrar preview si es imagen
-      if(file.type.startsWith('image/')){
-        const prev = qs('upload-preview');
-        prev.src = ev.target.result;
-        prev.style.display = 'block';
+      if (file.type.startsWith('image/')) {
+        const p = qs('upload-preview'); p.src = ev.target.result; p.style.display='block';
       }
-      resolve(res.split(',')[1] || '');
+      res(String(ev.target.result||'').split(',')[1]||'');
     };
-    reader.onerror = () => reject(new Error('No se pudo leer el archivo.'));
+    reader.onerror = () => rej(new Error('No se pudo leer el archivo.'));
     reader.readAsDataURL(file);
   });
 }
-async function deleteCurrentTask(){
+
+async function deleteTask() {
   const taskId = qs('task-id').value;
-  if(!taskId) return;
-  if(!confirm('¿Desea eliminar la tarea seleccionada y sus descendientes?')) return;
-  try{
+  if (!taskId) return;
+  if (!confirm('¿Eliminar la tarea y sus descendientes?')) return;
+  try {
     await api('deleteTask', state.token, taskId);
     closeModal('task-modal');
     await refreshData();
-    showToast('Tarea eliminada.');
-  }catch(err){ showToast(err.message, true); }
+    toast('🗑 Tarea eliminada.');
+  } catch(err) { toast(err.message, true); }
 }
-async function saveProjectFromForm(){
-  try{
-    const payload = {
-      project_id: qs('project-id').value || '',
+
+/* ═══════════════════════════════════════
+   PROYECTO / USUARIO / DIGEST
+═══════════════════════════════════════ */
+async function saveProject() {
+  try {
+    const p = {
+      project_id: qs('project-id').value||'',
       project_name: qs('project-name').value,
       description: qs('project-description').value,
       start_date: qs('project-start').value,
       end_date: qs('project-end').value,
       color: qs('project-color').value
     };
-    await api('saveProject', state.token, payload);
-    closeModal('project-modal');
-    qs('project-form').reset();
-    await refreshData();
-    showToast('Proyecto guardado.');
-  }catch(err){ showToast(err.message, true); }
+    await api('saveProject', state.token, p);
+    closeModal('project-modal'); qs('project-form').reset();
+    await refreshData(); toast('✅ Proyecto guardado.');
+  } catch(err) { toast(err.message, true); }
 }
-async function saveUserFromForm(){
-  try{
-    const payload = {
-      user_id: qs('user-id').value || '',
+
+async function saveUser() {
+  try {
+    const u = {
+      user_id: qs('user-id').value||'',
       username: qs('user-username').value,
       password: qs('user-password').value,
       display_name: qs('user-display-name').value,
@@ -856,115 +1227,454 @@ async function saveUserFromForm(){
       role: qs('user-role').value,
       active: qs('user-active').value === 'true'
     };
-    await api('saveUser', state.token, payload);
-    closeModal('user-modal');
-    qs('user-form').reset();
-    await refreshData();
-    showToast('Usuario guardado.');
-  }catch(err){ showToast(err.message, true); }
+    await api('saveUser', state.token, u);
+    closeModal('user-modal'); qs('user-form').reset();
+    await refreshData(); toast('✅ Usuario guardado.');
+  } catch(err) { toast(err.message, true); }
 }
-async function previewDigest(){
-  try{
-    const digest = await api('getDigestPreview', state.token);
-    qs('digest-preview').textContent = digest.text;
-    showModal('digest-modal');
-  }catch(err){ showToast(err.message, true); }
+
+async function previewDigest() {
+  try {
+    const d = await api('getDigestPreview', state.token);
+    qs('digest-preview').textContent = d.text;
+    openModal('digest-modal');
+  } catch(err) { toast(err.message, true); }
 }
-function applySidebarFilters(){
-  state.filters.project = qs('filter-project').value;
-  state.filters.status = qs('filter-status').value;
+
+/* ═══════════════════════════════════════
+   FIX 4: BOTÓN LIBRO DE DATOS
+═══════════════════════════════════════ */
+async function openSpreadsheet() {
+  try {
+    const r = await api('getSpreadsheetUrl', state.token);
+    window.open(r.url, '_blank');
+  } catch(err) { toast('No se pudo abrir el libro: ' + err.message, true); }
+}
+
+/* ═══════════════════════════════════════
+   FIX 5: FOTOS DE INTEGRANTES
+   Renders inside renderSettings — panel extra
+═══════════════════════════════════════ */
+function renderTeamPhotos() {
+  return `
+    <div class="card" style="grid-column:span 2">
+      <div class="section-title">📷 Fotos de integrantes</div>
+      <div class="section-sub" style="margin-bottom:14px">Sube o actualiza la foto de perfil de cada usuario del equipo</div>
+      <div class="team-photos-grid">
+        ${state.app.users.map(u => {
+          const photo = store.get(`paracel_photo_${u.user_id}`) || '';
+          return `
+            <div class="team-photo-card">
+              <div class="photo-avatar" id="avatar-${escHtml(u.user_id)}"
+                style="${photo ? `background-image:url(${photo});background-size:cover;background-position:center` : ''}">
+                ${!photo ? escHtml((u.display_name||'?').charAt(0).toUpperCase()) : ''}
+              </div>
+              <div class="photo-name">${escHtml(u.display_name)}</div>
+              <div class="photo-role muted small">${escHtml(u.role)}</div>
+              <label class="btn ghost sm wide" style="cursor:pointer;margin-top:8px;text-align:center">
+                📁 Cargar foto
+                <input type="file" accept="image/*" style="display:none"
+                  data-user-id="${escHtml(u.user_id)}"
+                  class="photo-upload-input">
+              </label>
+              ${photo ? `<button class="btn danger sm wide" style="margin-top:4px" data-remove-photo="${escHtml(u.user_id)}">✕ Quitar</button>` : ''}
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function bindPhotoUploads() {
+  qsa('.photo-upload-input').forEach(input => {
+    input.onchange = ev => {
+      const f = ev.target.files?.[0]; if (!f) return;
+      const uid = input.getAttribute('data-user-id');
+      const reader = new FileReader();
+      reader.onload = e => {
+        const dataUrl = e.target.result;
+        store.set(`paracel_photo_${uid}`, dataUrl);
+        // Update avatar immediately
+        const av = qs(`avatar-${uid}`);
+        if (av) {
+          av.style.backgroundImage = `url(${dataUrl})`;
+          av.style.backgroundSize = 'cover';
+          av.style.backgroundPosition = 'center';
+          av.textContent = '';
+        }
+        toast('✅ Foto actualizada.');
+        renderSettings(); // re-render to show remove button
+      };
+      reader.readAsDataURL(f);
+    };
+  });
+  qsa('[data-remove-photo]').forEach(btn => {
+    btn.onclick = () => {
+      const uid = btn.getAttribute('data-remove-photo');
+      store.del(`paracel_photo_${uid}`);
+      toast('Foto eliminada.');
+      renderSettings();
+    };
+  });
+}
+
+/* ═══════════════════════════════════════
+   FIX 6: REPORTE PDF
+═══════════════════════════════════════ */
+function printPdfReport() {
+  if (!state.app) { toast('Sin datos para generar reporte.', true); return; }
+
+  const today = todayIso();
+  const tasks  = state.app.tasks;
+  const overdue   = tasks.filter(t => t.overdue && !['Completada','Cancelada'].includes(t.status));
+  const inProgress = tasks.filter(t => t.status === 'En curso');
+  const blocked    = tasks.filter(t => t.status === 'Bloqueada');
+  const completed  = tasks.filter(t => t.status === 'Completada');
+  const d = state.app.dashboard;
+
+  // Collect user photos
+  const photoMap = {};
+  state.app.users.forEach(u => {
+    const p = store.get(`paracel_photo_${u.user_id}`);
+    if (p) photoMap[u.user_id] = p;
+  });
+
+  const progColor = pct => pct >= 75 ? '#15803d' : pct >= 40 ? '#1d4ed8' : '#d97706';
+
+  const projectSection = state.app.projects.map(proj => {
+    const pTasks = tasks.filter(t => t.project_id === proj.project_id);
+    const pOpen  = pTasks.filter(t => !['Completada','Cancelada'].includes(t.status));
+    const pDone  = pTasks.filter(t => t.status === 'Completada').length;
+    const pOver  = pTasks.filter(t => t.overdue && !['Completada','Cancelada'].includes(t.status));
+    const avg    = pTasks.length ? Math.round(pTasks.reduce((a,t)=>a+Number(t.progress||0),0)/pTasks.length) : 0;
+    const pColor = proj.color || '#0f3d1d';
+
+    const taskRows = pTasks.slice(0, 30).map(t => `
+      <tr style="${t.overdue && !['Completada','Cancelada'].includes(t.status) ? 'background:#fff5f5' : ''}">
+        <td style="padding:6px 8px;font-size:11px;border-bottom:1px solid #e5e7eb">${escHtml(t.title)}</td>
+        <td style="padding:6px 8px;font-size:11px;border-bottom:1px solid #e5e7eb;white-space:nowrap">${escHtml(t.status)}</td>
+        <td style="padding:6px 8px;font-size:11px;border-bottom:1px solid #e5e7eb;white-space:nowrap">${escHtml(t.priority)}</td>
+        <td style="padding:6px 8px;font-size:11px;border-bottom:1px solid #e5e7eb;white-space:nowrap">${escHtml(t.assignee_name||userName(t.assignee_user_id)||'—')}</td>
+        <td style="padding:6px 8px;font-size:11px;border-bottom:1px solid #e5e7eb;white-space:nowrap">${escHtml(t.due_date||'—')}</td>
+        <td style="padding:6px 8px;font-size:11px;border-bottom:1px solid #e5e7eb">
+          <div style="display:flex;align-items:center;gap:5px">
+            <div style="width:50px;height:5px;background:#e5e7eb;border-radius:99px;overflow:hidden">
+              <div style="height:100%;width:${t.progress||0}%;background:${progColor(t.progress||0)};border-radius:99px"></div>
+            </div>
+            <span style="font-size:10px;color:#6b7280">${t.progress||0}%</span>
+          </div>
+        </td>
+      </tr>
+    `).join('');
+
+    return `
+      <div style="page-break-inside:avoid;margin-bottom:24px;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden">
+        <div style="padding:12px 16px;background:${pColor};color:#fff;display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <div style="font-size:15px;font-weight:800">${escHtml(proj.project_name)}</div>
+            <div style="font-size:11px;opacity:.85">${escHtml(proj.description||'')}</div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:22px;font-weight:900;line-height:1">${avg}%</div>
+            <div style="font-size:10px;opacity:.85">avance</div>
+          </div>
+        </div>
+        <div style="padding:10px 16px;background:#f9fafb;display:flex;gap:20px;border-bottom:1px solid #e5e7eb">
+          <span style="font-size:11px"><strong>${pTasks.length}</strong> tareas</span>
+          <span style="font-size:11px;color:#1d4ed8"><strong>${pOpen.length}</strong> abiertas</span>
+          <span style="font-size:11px;color:#15803d"><strong>${pDone}</strong> completadas</span>
+          ${pOver.length ? `<span style="font-size:11px;color:#c0392b;font-weight:700">⚠ <strong>${pOver.length}</strong> ATRASADAS</span>` : ''}
+        </div>
+        ${pOver.length ? `
+          <div style="padding:8px 16px;background:#fff5f5;border-bottom:1px solid #fecaca">
+            <div style="font-size:11px;font-weight:700;color:#991b1b;margin-bottom:4px">🔴 Tareas atrasadas:</div>
+            ${pOver.map(t=>`<div style="font-size:11px;color:#c0392b;padding:1px 0">· ${escHtml(t.title)} (${escHtml(t.assignee_name||userName(t.assignee_user_id)||'Sin asignar')}) — venció ${escHtml(t.due_date||'')}</div>`).join('')}
+          </div>
+        ` : ''}
+        <table style="width:100%;border-collapse:collapse">
+          <thead>
+            <tr style="background:#f3f4f6">
+              <th style="padding:6px 8px;font-size:10px;text-align:left;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#6b7280">Tarea</th>
+              <th style="padding:6px 8px;font-size:10px;text-align:left;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#6b7280">Estado</th>
+              <th style="padding:6px 8px;font-size:10px;text-align:left;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#6b7280">Prior.</th>
+              <th style="padding:6px 8px;font-size:10px;text-align:left;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#6b7280">Resp.</th>
+              <th style="padding:6px 8px;font-size:10px;text-align:left;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#6b7280">Vence</th>
+              <th style="padding:6px 8px;font-size:10px;text-align:left;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#6b7280">Avance</th>
+            </tr>
+          </thead>
+          <tbody>${taskRows}</tbody>
+        </table>
+      </div>
+    `;
+  }).join('');
+
+  const html = `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Reporte PARACEL — ${today}</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;700;900&family=DM+Sans:wght@400;600&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'DM Sans', Arial, sans-serif; font-size: 13px; color: #111827; background: #fff; padding: 32px; }
+  h1 { font-family: 'Sora', sans-serif; font-size: 26px; font-weight: 900; color: #0f3d1d; letter-spacing: -.5px; }
+  @media print {
+    body { padding: 16px; }
+    .no-print { display: none !important; }
+    .page-break { page-break-before: always; }
+  }
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:24px;padding-bottom:16px;border-bottom:2px solid #0f3d1d">
+  <div>
+    <div style="font-size:11px;font-weight:700;color:#15803d;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">PARACEL · Gestor Colaborativo</div>
+    <h1>Reporte de Estado de Proyectos</h1>
+    <div style="font-size:12px;color:#6b7280;margin-top:4px">Generado el ${today} · ${state.app.session.display_name}</div>
+  </div>
+  <div style="text-align:right">
+    <div style="font-size:36px;font-weight:900;color:#0f3d1d;line-height:1">${d.avg_progress}%</div>
+    <div style="font-size:11px;color:#6b7280">avance general</div>
+  </div>
+</div>
+
+<!-- KPIs EJECUTIVOS -->
+<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:28px">
+  ${[
+    { label:'Proyectos', val: d.projects, color:'#0f3d1d' },
+    { label:'Tareas abiertas', val: d.open_tasks, color:'#1d4ed8' },
+    { label:'Urgentes', val: d.urgent, color:'#d97706' },
+    { label:'ATRASADAS', val: d.overdue, color:'#c0392b' },
+    { label:'Bloqueadas', val: d.blocked, color:'#7c3aed' },
+  ].map(k=>`
+    <div style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;text-align:center;border-top:3px solid ${k.color}">
+      <div style="font-size:28px;font-weight:900;color:${k.color};line-height:1">${k.val}</div>
+      <div style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:#6b7280;margin-top:4px;font-weight:700">${k.label}</div>
+    </div>
+  `).join('')}
+</div>
+
+${overdue.length ? `
+<!-- ALERTA: TAREAS ATRASADAS -->
+<div style="background:#fff5f5;border:1.5px solid #fecaca;border-radius:10px;padding:14px 16px;margin-bottom:24px">
+  <div style="font-size:13px;font-weight:800;color:#991b1b;margin-bottom:10px">🚨 RESUMEN DE TAREAS ATRASADAS (${overdue.length})</div>
+  <table style="width:100%;border-collapse:collapse">
+    <thead><tr style="background:#fee2e2">
+      <th style="padding:5px 8px;font-size:10px;text-align:left;color:#991b1b">Tarea</th>
+      <th style="padding:5px 8px;font-size:10px;text-align:left;color:#991b1b">Proyecto</th>
+      <th style="padding:5px 8px;font-size:10px;text-align:left;color:#991b1b">Responsable</th>
+      <th style="padding:5px 8px;font-size:10px;text-align:left;color:#991b1b">Venció</th>
+      <th style="padding:5px 8px;font-size:10px;text-align:left;color:#991b1b">Avance</th>
+    </tr></thead>
+    <tbody>
+      ${overdue.map(t=>`
+        <tr>
+          <td style="padding:5px 8px;font-size:11px;border-bottom:1px solid #fecaca;font-weight:600">${escHtml(t.title)}</td>
+          <td style="padding:5px 8px;font-size:11px;border-bottom:1px solid #fecaca">${escHtml(projName(t.project_id))}</td>
+          <td style="padding:5px 8px;font-size:11px;border-bottom:1px solid #fecaca">${escHtml(t.assignee_name||userName(t.assignee_user_id)||'Sin asignar')}</td>
+          <td style="padding:5px 8px;font-size:11px;border-bottom:1px solid #fecaca;color:#c0392b;font-weight:700">${escHtml(t.due_date||'—')}</td>
+          <td style="padding:5px 8px;font-size:11px;border-bottom:1px solid #fecaca">${t.progress||0}%</td>
+        </tr>
+      `).join('')}
+    </tbody>
+  </table>
+</div>
+` : ''}
+
+<!-- DESGLOSE POR PROYECTO -->
+<div style="font-family:'Sora',sans-serif;font-size:16px;font-weight:800;color:#0f3d1d;margin-bottom:14px;padding-bottom:6px;border-bottom:1px solid #d1fae5">
+  Detalle por proyecto
+</div>
+${projectSection}
+
+<!-- TEAM -->
+<div class="page-break" style="margin-top:28px;padding-top:20px">
+  <div style="font-family:'Sora',sans-serif;font-size:16px;font-weight:800;color:#0f3d1d;margin-bottom:14px;padding-bottom:6px;border-bottom:1px solid #d1fae5">
+    Equipo
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:12px">
+    ${state.app.users.map(u => {
+      const photo = photoMap[u.user_id];
+      const uTasks = tasks.filter(t => t.assignee_user_id===u.user_id || (!t.assignee_user_id && (t.assignee_name||'').toLowerCase()===(u.display_name||'').toLowerCase()));
+      const open = uTasks.filter(t=>!['Completada','Cancelada'].includes(t.status)).length;
+      const done = uTasks.filter(t=>t.status==='Completada').length;
+      return `
+        <div style="border:1px solid #e5e7eb;border-radius:10px;padding:12px;min-width:150px;text-align:center">
+          ${photo
+            ? `<img src="${photo}" style="width:52px;height:52px;border-radius:50%;object-fit:cover;margin:0 auto 8px;display:block;border:2px solid #d1fae5">`
+            : `<div style="width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,#14532d,#22c55e);color:#fff;font-size:22px;font-weight:900;display:grid;place-items:center;margin:0 auto 8px">${escHtml((u.display_name||'?').charAt(0).toUpperCase())}</div>`
+          }
+          <div style="font-weight:700;font-size:12px">${escHtml(u.display_name)}</div>
+          <div style="font-size:10px;color:#6b7280;text-transform:capitalize;margin:2px 0">${escHtml(u.role)}</div>
+          <div style="font-size:10px;color:#374151;margin-top:4px"><strong>${open}</strong> abiertas · <strong>${done}</strong> completadas</div>
+        </div>
+      `;
+    }).join('')}
+  </div>
+</div>
+
+<div style="margin-top:32px;padding-top:14px;border-top:1px solid #e5e7eb;font-size:10px;color:#9ca3af;text-align:center">
+  PARACEL · Gestor Colaborativo de Proyectos · Reporte generado automáticamente el ${today}
+</div>
+
+<div class="no-print" style="margin-top:24px;text-align:center">
+  <button onclick="window.print()" style="padding:12px 28px;background:#0f3d1d;color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer">
+    🖨 Imprimir / Guardar como PDF
+  </button>
+  <button onclick="window.close()" style="margin-left:10px;padding:12px 20px;background:#e5e7eb;color:#374151;border:none;border-radius:10px;font-size:14px;cursor:pointer">
+    Cerrar
+  </button>
+</div>
+</body>
+</html>`;
+
+  const win = window.open('', '_blank', 'width=900,height=700');
+  if (!win) { toast('El navegador bloqueó la ventana emergente. Permítela e intenta de nuevo.', true); return; }
+  win.document.write(html);
+  win.document.close();
+}
+
+/* ═══════════════════════════════════════
+   FILTERS
+═══════════════════════════════════════ */
+function applyFilters() {
+  state.filters.project  = qs('filter-project').value;
+  state.filters.status   = qs('filter-status').value;
   state.filters.priority = qs('filter-priority').value;
-  state.filters.search = qs('filter-search').value.trim();
-  renderActiveTab();
+  state.filters.search   = qs('filter-search').value.trim();
+  renderTab();
 }
-function renderActiveTab(){
-  document.querySelectorAll('.tab-section').forEach(sec => sec.classList.remove('active'));
-  qs('tab-' + state.activeTab).classList.add('active');
-  document.querySelectorAll('.sidebar .nav-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === state.activeTab));
-  if(state.activeTab === 'dashboard') renderDashboard();
-  if(state.activeTab === 'timeline') renderTimeline();
-  if(state.activeTab === 'calendar') renderCalendar();
-  if(state.activeTab === 'team') renderTeam();
-  if(state.activeTab === 'files') renderFiles();
-  if(state.activeTab === 'settings') renderSettings();
+
+/* ═══════════════════════════════════════
+   TAB ROUTER
+═══════════════════════════════════════ */
+function renderTab() {
+  qsa('.tab-section').forEach(s => s.classList.remove('active'));
+  qs('tab-'+state.tab).classList.add('active');
+  qsa('.sidebar .nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === state.tab));
+  const map = {
+    dashboard: renderDashboard,
+    timeline:  renderTimeline,
+    calendar:  renderCalendar,
+    team:      renderTeam,
+    files:     renderFiles,
+    activity:  renderActivity,
+    settings:  renderSettings
+  };
+  (map[state.tab] || (() => {}))();
 }
-async function refreshData(){
-  try{
+
+/* ═══════════════════════════════════════
+   DATA REFRESH
+═══════════════════════════════════════ */
+async function refreshData() {
+  try {
     state.app = await api('getBootstrap', state.token);
-    localStorage.setItem('paracel_token', state.token);
+    store.set('paracel_token', state.token);
     qs('session-name').textContent = state.app.session.display_name;
     qs('session-role').textContent = state.app.session.role;
     renderFilters();
     renderMessageBar();
-    renderActiveTab();
-  }catch(err){
-    showToast(err.message, true);
+    renderTab();
+  } catch(err) {
+    qs('login-error').textContent = 'Error fatal: ' + String(err.message||err);
+    qs('login-error').classList.remove('hidden');
     logoutLocal();
   }
 }
-function logoutLocal(){
-  localStorage.removeItem('paracel_token');
-  state.token = '';
-  state.app = null;
+
+function logoutLocal() {
+  store.del('paracel_token');
+  state.token = ''; state.app = null;
   qs('main-screen').classList.add('hidden');
   qs('login-screen').classList.remove('hidden');
 }
-async function tryAutoSession(){
-  if(!state.token) return;
-  try{
+
+async function tryAutoSession() {
+  if (!state.token) return;
+  try {
     await refreshData();
     qs('login-screen').classList.add('hidden');
     qs('main-screen').classList.remove('hidden');
-  }catch(err){
-    logoutLocal();
-  }
+  } catch { logoutLocal(); }
 }
-document.addEventListener('DOMContentLoaded', () => {
-  document.querySelectorAll('[data-close-modal]').forEach(btn => btn.onclick = () => closeModal(btn.dataset.closeModal));
 
+/* ═══════════════════════════════════════
+   INIT
+═══════════════════════════════════════ */
+document.addEventListener('DOMContentLoaded', () => {
+  // Dark mode
+  applyDark();
+  qs('dark-toggle').onclick = () => {
+    state.dark = !state.dark;
+    store.set('paracel_dark', state.dark ? '1' : '0');
+    applyDark();
+  };
+
+  // Close modals
+  qsa('[data-close-modal]').forEach(btn => btn.onclick = () => closeModal(btn.dataset.closeModal));
+  // Close gantt panel
+  qs('gfp-close').onclick = () => qs('gantt-float-panel').classList.add('hidden');
+
+  // Login
   qs('login-form').onsubmit = async ev => {
     ev.preventDefault();
     qs('login-error').classList.add('hidden');
-    try{
-      const res = await api('login', qs('login-username').value, qs('login-password').value);
-      state.token = res.token;
-      localStorage.setItem('paracel_token', state.token);
+    try {
+      const r = await api('login', qs('login-username').value, qs('login-password').value);
+      state.token = r.token;
+      store.set('paracel_token', r.token);
       qs('login-screen').classList.add('hidden');
       qs('main-screen').classList.remove('hidden');
       await refreshData();
-      showToast('Sesión iniciada correctamente.');
-    }catch(err){
+      toast('👋 Bienvenido/a al sistema.');
+    } catch(err) {
       qs('login-error').textContent = err.message;
       qs('login-error').classList.remove('hidden');
     }
   };
 
-  document.querySelectorAll('.sidebar .nav-btn').forEach(btn => {
-    btn.onclick = () => { state.activeTab = btn.dataset.tab; renderActiveTab(); };
+  // Nav
+  qsa('.sidebar .nav-btn').forEach(btn => {
+    btn.onclick = () => { state.tab = btn.dataset.tab; renderTab(); };
   });
 
-  qs('filter-project').onchange = applySidebarFilters;
-  qs('filter-status').onchange = applySidebarFilters;
-  qs('filter-priority').onchange = applySidebarFilters;
-  qs('filter-search').oninput = applySidebarFilters;
+  // Filters
+  qs('filter-project').onchange  = applyFilters;
+  qs('filter-status').onchange   = applyFilters;
+  qs('filter-priority').onchange = applyFilters;
+  qs('filter-search').oninput    = applyFilters;
 
+  // Spreadsheet & PDF
+  qs('btn-open-sheet').onclick  = openSpreadsheet;
+  qs('btn-pdf-report').onclick  = printPdfReport;
+
+  // Toolbar
   qs('btn-refresh').onclick = refreshData;
   qs('btn-logout').onclick = async () => {
-    try{ if(state.token) await api('logout', state.token); } catch(err){}
+    try { if (state.token) await api('logout', state.token); } catch {}
     logoutLocal();
   };
+
+  // New task
   qs('btn-new-task').onclick = () => {
-    resetTaskForm();
-    const projectId = qs('filter-project').value || (state.app.projects[0] ? state.app.projects[0].project_id : '');
-    qs('task-project').value = projectId;
-    fillTaskParentOptions(projectId);
-    showModal('task-modal');
+    resetTaskModal();
+    openModal('task-modal');
   };
-  qs('task-project').onchange = () => fillTaskParentOptions(qs('task-project').value, qs('task-id').value);
-  qs('btn-save-task').onclick = saveTaskFromForm;
-  qs('btn-delete-task').onclick = deleteCurrentTask;
-  qs('btn-save-project').onclick = saveProjectFromForm;
-  qs('btn-save-user').onclick = saveUserFromForm;
+  qs('task-project').onchange = () => fillParentOptions(qs('task-project').value, qs('task-id').value);
+  qs('task-upload').onchange = ev => {
+    const f = ev.target.files?.[0]; if (!f) return;
+    if (f.type.startsWith('image/')) {
+      const r = new FileReader(); r.onload = e => { const p=qs('upload-preview'); p.src=e.target.result; p.style.display='block'; }; r.readAsDataURL(f);
+    }
+  };
+  qs('btn-save-task').onclick    = saveTask;
+  qs('btn-delete-task').onclick  = deleteTask;
+  qs('btn-save-project').onclick = saveProject;
+  qs('btn-save-user').onclick    = saveUser;
   qs('btn-preview-digest').onclick = previewDigest;
 
   tryAutoSession();

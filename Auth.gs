@@ -1,19 +1,16 @@
 function login(username, password) {
-  const u = normalizeText_(username).toLowerCase();
-  const rows = readTable_('users');
-  const found = rows.find(function(row) {
-    return String(row.username || '').toLowerCase() === u &&
-      String(row.active).toUpperCase() !== 'FALSE';
+  var u = normalizeText_(username).toLowerCase();
+  var rows = readTable_('users');
+  var found = rows.find(function(row) {
+    return String(row.username || '').toLowerCase() === u && asBool_(row.active);
   });
   if (!found) throw new Error('Usuario no encontrado o inactivo.');
 
-  const incoming = hashPassword_(password);
-  if (incoming !== String(found.password_hash || '')) {
-    throw new Error('Contraseña inválida.');
-  }
+  var incoming = hashPassword_(password);
+  if (incoming !== String(found.password_hash || '')) throw new Error('Contraseña inválida.');
 
-  const session = createSession_(found);
-  logActivity_('auth', found.user_id, 'login', {username: found.username}, session);
+  var session = createSession_(found);
+  logActivity_('auth', found.user_id, 'login', {username: found.username}, session, '');
   return {
     token: session.token,
     user: {
@@ -27,14 +24,14 @@ function login(username, password) {
 }
 
 function logout(token) {
-  const session = getSession_(token);
-  logActivity_('auth', session.user_id, 'logout', {username: session.username}, session);
+  var session = getSession_(token);
+  logActivity_('auth', session.user_id, 'logout', {username: session.username}, session, '');
   destroySession_(token);
   return {ok: true};
 }
 
 function getCurrentSession(token) {
-  const session = getSession_(token);
+  var session = getSession_(token);
   return {
     token: token,
     user: {

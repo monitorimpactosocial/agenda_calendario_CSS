@@ -274,53 +274,21 @@ const SEED_LEGACY_TASKS = [
 ];
 
 function seedUsers_() {
-  const rows = readTable_('users');
-  if (rows.length) return rows;
-
-  const seed = [
-    {
-      user_id: 'u_admin',
-      username: 'admin',
-      password_hash: hashPassword_('Admin2026!'),
-      display_name: 'Administrador',
-      email: 'diego.meza@paracel.com.py',
-      role: 'admin',
-      active: true,
-      created_at: nowIso_(),
-      updated_at: nowIso_()
-    },
-    {
-      user_id: 'u_diego',
-      username: 'diego',
-      password_hash: hashPassword_('Diego2026!'),
-      display_name: 'Diego Meza',
-      email: 'diego.meza@paracel.com.py',
-      role: 'manager',
-      active: true,
-      created_at: nowIso_(),
-      updated_at: nowIso_()
-    },
-    {
-      user_id: 'u_analista',
-      username: 'analista',
-      password_hash: hashPassword_('Analista2026!'),
-      display_name: 'Analista de Proyecto',
-      email: '',
-      role: 'member',
-      active: true,
-      created_at: nowIso_(),
-      updated_at: nowIso_()
-    }
+  var seed = [
+    { user_id: 'u_user', username: 'user', password_hash: hashPassword_('123'), display_name: 'Usuario', email: '', role: 'member', active: true, created_at: nowIso_(), updated_at: nowIso_() },
+    { user_id: 'u_admin', username: 'admin', password_hash: hashPassword_('Admin2026!'), display_name: 'Administrador', email: 'diego.meza@paracel.com.py', role: 'admin', active: true, created_at: nowIso_(), updated_at: nowIso_() },
+    { user_id: 'u_diego', username: 'diego', password_hash: hashPassword_('Diego2026!'), display_name: 'Diego Meza', email: 'diego.meza@paracel.com.py', role: 'manager', active: true, created_at: nowIso_(), updated_at: nowIso_() },
+    { user_id: 'u_analista', username: 'analista', password_hash: hashPassword_('Analista2026!'), display_name: 'Analista', email: '', role: 'member', active: true, created_at: nowIso_(), updated_at: nowIso_() }
   ];
-  writeTable_('users', seed);
+  seed.forEach(function(u) { upsertRow_('users', 'user_id', u); });
   return seed;
 }
 
 function seedProjectsAndMemberships_() {
-  const projects = readTable_('projects');
+  var projects = readTable_('projects');
   if (!projects.length) {
-    const projectId = 'prj_migracion';
-    const folder = getProjectFolder_(projectId, 'Migración Inicial');
+    var projectId = 'prj_migracion';
+    var folder = getProjectFolder_(projectId, 'Migración Inicial');
     writeTable_('projects', [{
       project_id: projectId,
       project_name: 'Migración Inicial',
@@ -334,40 +302,16 @@ function seedProjectsAndMemberships_() {
       created_at: nowIso_(),
       updated_at: nowIso_()
     }]);
-    writeTable_('memberships', [
-      {
-        membership_id: toId_('m'),
-        project_id: projectId,
-        user_id: 'u_admin',
-        role: 'admin',
-        active: true,
-        created_at: nowIso_()
-      },
-      {
-        membership_id: toId_('m'),
-        project_id: projectId,
-        user_id: 'u_diego',
-        role: 'manager',
-        active: true,
-        created_at: nowIso_()
-      },
-      {
-        membership_id: toId_('m'),
-        project_id: projectId,
-        user_id: 'u_analista',
-        role: 'member',
-        active: true,
-        created_at: nowIso_()
-      }
-    ]);
   }
+  ensureMembershipForProject_('prj_migracion', 'u_admin', 'admin');
+  ensureMembershipForProject_('prj_migracion', 'u_diego', 'manager');
+  ensureMembershipForProject_('prj_migracion', 'u_analista', 'member');
 }
 
 function seedLegacyTasks_() {
-  const tasks = readTable_('tasks');
+  var tasks = readTable_('tasks');
   if (tasks.length) return;
-
-  const seedRows = SEED_LEGACY_TASKS.map(function(t) {
+  var seedRows = SEED_LEGACY_TASKS.map(function(t) {
     return {
       task_id: t.id || toId_('task'),
       project_id: 'prj_migracion',

@@ -1,6 +1,6 @@
 const APP_CONFIG = {
   APP_NAME: 'PARACEL · Gestor Colaborativo de Proyectos',
-  APP_VERSION: '1.0.0',
+  APP_VERSION: '3.0.0',
   TIMEZONE: 'America/Asuncion',
   SPREADSHEET_ID: '145fOpiy_AGJRMkFcJcjlFPSyvgt6PJZajRHdgnS2igo',
   ROOT_FOLDER_ID: '1LTdgB_mXLD8_9tIUF2yRylJU7nj-haPm',
@@ -8,10 +8,14 @@ const APP_CONFIG = {
   DIGEST_HOUR: 7,
   DIGEST_MINUTE: 30,
   SESSION_TTL_SECONDS: 21600,
-  SALT: 'PARACEL_GESTOR_2026_SALT_CAMBIAR_EN_PROPIEDADES',
+  SESSION_PROPERTY_PREFIX: 'session:',
+  SESSION_CACHE_PREFIX: 'session:',
+  SALT_PROPERTY_KEY: 'PARACEL_GESTOR_APP_SALT',
+  FALLBACK_SALT: 'PARACEL_GESTOR_2026_SALT_CAMBIAR_EN_PROPIEDADES',
   DEFAULT_PROJECT_COLOR: '#14532d',
   MAX_TOOLTIP_DESC: 280,
-  MAX_UPLOAD_BYTES: 8 * 1024 * 1024
+  MAX_UPLOAD_BYTES: 8 * 1024 * 1024,
+  MAX_ACTIVITY_ROWS: 400
 };
 
 const SHEETS = {
@@ -51,8 +55,8 @@ const HEADERS = {
     'created_at'
   ],
   activity_log: [
-    'log_id', 'entity_type', 'entity_id', 'action', 'payload_json', 'actor_id',
-    'actor_name', 'created_at'
+    'log_id', 'project_id', 'entity_type', 'entity_id', 'action', 'payload_json',
+    'actor_id', 'actor_name', 'created_at'
   ]
 };
 
@@ -60,5 +64,7 @@ const ENUMS = {
   TASK_TYPES: ['Tema', 'Subtema', 'Actividad', 'Hito'],
   TASK_STATUSES: ['Pendiente', 'En curso', 'Bloqueada', 'Completada', 'Atrasada', 'Cancelada'],
   TASK_PRIORITIES: ['Crítica', 'Alta', 'Media', 'Baja'],
-  PROJECT_STATUSES: ['Activo', 'Pausado', 'Cerrado']
+  PROJECT_STATUSES: ['Activo', 'Pausado', 'Cerrado'],
+  USER_ROLES: ['admin', 'manager', 'member'],
+  MEMBERSHIP_ROLES: ['admin', 'manager', 'member']
 };
