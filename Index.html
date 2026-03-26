@@ -19,7 +19,7 @@
           <h1>PARACEL · Gestor Colaborativo</h1>
           <p class="sub">Cronograma · Kanban · Equipos · Archivos · Panel ejecutivo</p>
 
-          <form id="login-form" class="form-grid compact" style="margin-top:8px">
+          <form id="login-form" class="form-grid compact" style="margin-top:8px" onsubmit="event.preventDefault();">
             <div class="col-12">
               <label>
                 <span>Usuario</span>
@@ -181,7 +181,7 @@
           <button class="icon-btn" data-close-modal="task-modal">✕</button>
         </div>
         <div class="modal-body">
-          <form id="task-form" class="form-grid">
+          <form id="task-form" class="form-grid" onsubmit="event.preventDefault();">
             <input id="task-id" type="hidden">
             <div class="col-3"><label><span>Proyecto</span><select id="task-project" required></select></label></div>
             <div class="col-3">
@@ -251,7 +251,7 @@
           <button class="icon-btn" data-close-modal="project-modal">✕</button>
         </div>
         <div class="modal-body">
-          <form id="project-form" class="form-grid">
+          <form id="project-form" class="form-grid" onsubmit="event.preventDefault();">
             <input id="project-id" type="hidden">
             <div class="col-12"><label><span>Nombre del proyecto</span><input id="project-name" type="text" required></label></div>
             <div class="col-12"><label><span>Descripción</span><textarea id="project-description" rows="3"></textarea></label></div>
@@ -277,7 +277,7 @@
           <button class="icon-btn" data-close-modal="user-modal">✕</button>
         </div>
         <div class="modal-body">
-          <form id="user-form" class="form-grid">
+          <form id="user-form" class="form-grid" onsubmit="event.preventDefault();">
             <input id="user-id" type="hidden">
             <div class="col-6"><label><span>Usuario</span><input id="user-username" type="text" required></label></div>
             <div class="col-6"><label><span>Contraseña</span><input id="user-password" type="password" placeholder="Dejar vacío para no cambiar"></label></div>
