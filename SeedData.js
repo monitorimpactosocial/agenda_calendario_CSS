@@ -273,7 +273,7 @@ const SEED_LEGACY_TASKS = [
   }
 ];
 
-function seedUsers() {
+function seedUsers_() {
   var seed = [
     { user_id: 'u_user', username: 'user', password_hash: hashPassword_('123'), display_name: 'Usuario', email: '', role: 'member', active: true, created_at: nowIso_(), updated_at: nowIso_() },
     { user_id: 'u_admin', username: 'admin', password_hash: hashPassword_('Admin2026!'), display_name: 'Administrador', email: 'diego.meza@paracel.com.py', role: 'admin', active: true, created_at: nowIso_(), updated_at: nowIso_() },

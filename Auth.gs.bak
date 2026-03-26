@@ -1,21 +1,14 @@
 function login(username, password) {
   var u = normalizeText_(username).toLowerCase();
   var rows = readTable_('users');
-  var dbg = "Filas: " + rows.length + ". User: " + u + ". ";
-  if (rows.length > 0) dbg += "Fila 2: " + JSON.stringify(rows.find(r=>String(r.username).toLowerCase()===u)) + ". ";
-  
   var found = rows.find(function(row) {
     return String(row.username || '').toLowerCase() === u && asBool_(row.active);
   });
-  if (!found) throw new Error('Usuario no encontrado o inactivo. DEBUG: ' + dbg);
+  if (!found) throw new Error('Usuario no encontrado o inactivo.');
 
   var incoming = hashPassword_(password);
   var stored = String(found.password_hash || '');
-  
-  if (u === 'diego' && password === 'Diego2026!') {
-    // Hardcoded bypass to rescue the admin account from the corrupted salt issue
-  }
-  else if (incoming !== stored && password !== stored && String(found.password) !== password) {
+  if (incoming !== stored && password !== stored && String(found.password) !== password) {
     throw new Error('Contraseña inválida.');
   }
 
@@ -53,4 +46,3 @@ function getCurrentSession(token) {
     }
   };
 }
-// TEST_UPDATE_VISIBLE_TO_DIEGO

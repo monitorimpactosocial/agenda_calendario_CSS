@@ -1,4 +1,4 @@
-<script>
+
 /* ================================================================
    PARACEL · Gestor Colaborativo v3 — Scripts
    Lógica de cliente completamente refactorizada:
@@ -1687,4 +1687,3 @@ document.addEventListener('DOMContentLoaded', () => {
 
   tryAutoSession();
 });
-</script>
