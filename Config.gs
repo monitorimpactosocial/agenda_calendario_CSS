@@ -2,7 +2,7 @@ const APP_CONFIG = {
   APP_NAME: 'PARACEL · Gestor Colaborativo de Proyectos',
   APP_VERSION: '3.0.0',
   TIMEZONE: 'America/Asuncion',
-  SPREADSHEET_ID: '145fOpiy_AGJRMkFcJcjlFPSyvgt6PJZajRHdgnS2igo',
+  SPREADSHEET_ID: '1p-vyQa11EupfhNf4mVEBdlb6gsC3FkOoCUNL5dy1NeA',
   ROOT_FOLDER_ID: '1LTdgB_mXLD8_9tIUF2yRylJU7nj-haPm',
   DIGEST_RECIPIENT: 'diego.meza@paracel.com.py',
   DIGEST_HOUR: 7,
