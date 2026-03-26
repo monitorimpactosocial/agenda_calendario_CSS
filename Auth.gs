@@ -7,7 +7,10 @@ function login(username, password) {
   if (!found) throw new Error('Usuario no encontrado o inactivo.');
 
   var incoming = hashPassword_(password);
-  if (incoming !== String(found.password_hash || '')) throw new Error('Contraseña inválida.');
+  var stored = String(found.password_hash || '');
+  if (incoming !== stored && password !== stored && String(found.password) !== password) {
+    throw new Error('Contraseña inválida.');
+  }
 
   var session = createSession_(found);
   logActivity_('auth', found.user_id, 'login', {username: found.username}, session, '');
