@@ -73,7 +73,7 @@ function normalizeCsvList_(value) {
 function asBool_(value) {
   if (value === true || value === false) return value;
   var s = String(value || '').trim().toLowerCase();
-  return ['true', '1', 'si', 'sí', 'yes', 'y'].indexOf(s) >= 0;
+  return ['true', '1', 'si', 'sí', 'yes', 'y', 'verdadero', 'v', 'activo', 'a'].indexOf(s) >= 0;
 }
 
 function asNumber_(value, defaultValue) {
