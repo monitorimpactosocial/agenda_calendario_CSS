@@ -92,6 +92,9 @@
               <div class="nav-btn" data-tab="calendar" tabindex="0">
                 <span class="nav-icon">🗓️</span> Calendario
               </div>
+              <div class="nav-btn" data-tab="venn" tabindex="0">
+                <span class="nav-icon">⭕</span> Intersecciones
+              </div>
               <div class="nav-btn" data-tab="team" tabindex="0">
                 <span class="nav-icon">👥</span> Equipos
               </div>
@@ -159,6 +162,7 @@
             <section id="tab-dashboard" class="tab-section active"></section>
             <section id="tab-timeline"  class="tab-section"></section>
             <section id="tab-calendar"  class="tab-section"></section>
+            <section id="tab-venn"      class="tab-section"></section>
             <section id="tab-team"      class="tab-section"></section>
             <section id="tab-files"     class="tab-section"></section>
             <section id="tab-activity"  class="tab-section"></section>
@@ -336,6 +340,10 @@
     <!-- TOAST & TOOLTIP -->
     <div id="toast"   class="toast hidden"></div>
     <div id="tooltip" class="tooltip hidden"></div>
+
+    <!-- VENN D3 -->
+    <script src="https://d3js.org/d3.v5.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/venn.js@0.2.20/build/venn.min.js"></script>
 
     <?!= include('Scripts'); ?>
   </body>

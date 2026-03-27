@@ -650,15 +650,19 @@ function renderCalendar() {
       return s <= cellDate && e >= cellDate;
     }).slice(0, 4);
     const isToday = cellDate === todayIso();
+    
+    const dayTasksHtml = dayTasks.map(t => {
+      const pColor = projColor(t.project_id);
+      const shortTitle = (t.title||'').slice(0,22) + ((t.title||'').length>22?'...':'');
+      return '<span class="day-chip" data-open="' + escHtml(t.task_id) + '" data-tt="' + escHtml(t.task_id) + '" ' +
+        'style="background:' + pColor + '22;color:' + pColor + ';border-left:3px solid ' + pColor + '">' +
+        escHtml(shortTitle) + '</span>';
+    }).join('');
+
     cells.push(`
       <div class="day-card${isToday?' today':''}" style="${muted?'opacity:.4':''}">
         <div class="day-num">${dayNum}</div>
-        ${dayTasks.map(t => {
-          const pColor = projColor(t.project_id);
-          return `<span class="day-chip" data-open="${escHtml(t.task_id)}" data-tt="${escHtml(t.task_id)}"
-            style="background:${pColor}22;color:${pColor};border-left:3px solid ${pColor}"
-          >${escHtml(projNameShort(t.project_id))}: ${escHtml(t.title)}</span>`;
-        }).join('')}
+        ${dayTasksHtml}
       </div>
     `);
   }
@@ -1573,6 +1577,93 @@ ${projectSection}
 }
 
 /* ═══════════════════════════════════════
+   RENDER: VENN
+═══════════════════════════════════════ */
+function renderVenn() {
+  const container = qs('venn-container');
+  if (!window.venn || !window.d3) {
+    container.innerHTML = '<div class="muted">Librerías D3/Venn no cargadas.</div>';
+    return;
+  }
+  container.innerHTML = '';
+  
+  const mode = qs('venn-mode') ? qs('venn-mode').value : 'projects';
+  const tasks = filtered();
+  
+  const groups = {};
+  tasks.forEach(t => {
+    if (!t.tags) return;
+    const tags = t.tags.split(',').map(x=>x.trim()).filter(Boolean);
+    if (!tags.length) return;
+    
+    let gname = mode === 'projects' ? projNameShort(t.project_id) : (userName(t.assignee_user_id) || 'Sin asignar');
+    if (!groups[gname]) groups[gname] = new Set();
+    
+    tags.forEach(tag => groups[gname].add(tag.toLowerCase()));
+  });
+
+  const keys = Object.keys(groups);
+  if (keys.length < 2) {
+    container.innerHTML = '<div class="muted" style="margin:20px">No hay suficientes datos clasificados con etiquetas cruzadas para generar el esquema de intersecciones.</div>';
+    return;
+  }
+
+  const sets = [];
+  keys.forEach(k => {
+    sets.push({ sets: [k], size: groups[k].size || 0 });
+  });
+  
+  for (let i=0; i<keys.length; i++) {
+    for (let j=i+1; j<keys.length; j++) {
+      const intersection = new Set([...groups[keys[i]]].filter(x => groups[keys[j]].has(x)));
+      if (intersection.size > 0) {
+        sets.push({ sets: [keys[i], keys[j]], size: intersection.size, __labels: Array.from(intersection).slice(0,3).join(', ') });
+      }
+    }
+  }
+
+  const chart = venn.VennDiagram().width(700).height(450);
+  const div = d3.select("#venn-container");
+  div.datum(sets).call(chart);
+  
+  div.selectAll("path")
+    .style("stroke-opacity", 0)
+    .style("stroke", "#fff")
+    .style("stroke-width", 3);
+    
+  div.selectAll("g")
+      .on("mouseover", function(d) {
+          venn.sortAreas(div, d);
+          d3.selectAll(".venn-tooltip").remove();
+          const tooltip = d3.select("body").append("div")
+              .attr("class", "venn-tooltip")
+              .style("position", "absolute")
+              .style("text-align", "center")
+              .style("padding", "6px 10px")
+              .style("background", "rgba(15, 61, 29, 0.95)")
+              .style("color", "#fff")
+              .style("font-size", "12px")
+              .style("border-radius", "8px")
+              .style("pointer-events", "none")
+              .style("opacity", 0);
+              
+          tooltip.transition().duration(200).style("opacity", 1);
+          tooltip.text(d.size + " etiquetas" + (d.__labels ? ' ('+d.__labels+')' : ''));
+          
+          d3.select(this).select("path").style("stroke-opacity", 1);
+      })
+      .on("mousemove", function() {
+          d3.select(".venn-tooltip")
+            .style("left", (d3.event.pageX + 15) + "px")
+            .style("top", (d3.event.pageY - 15) + "px");
+      })
+      .on("mouseout", function() {
+          d3.selectAll(".venn-tooltip").remove();
+          d3.select(this).select("path").style("stroke-opacity", 0);
+      });
+}
+
+/* ═══════════════════════════════════════
    FILTERS
 ═══════════════════════════════════════ */
 function applyFilters() {
@@ -1594,6 +1685,7 @@ function renderTab() {
     dashboard: renderDashboard,
     timeline:  renderTimeline,
     calendar:  renderCalendar,
+    venn:      renderVenn,
     team:      renderTeam,
     files:     renderFiles,
     activity:  renderActivity,
