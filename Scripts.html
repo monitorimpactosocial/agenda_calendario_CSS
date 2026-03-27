@@ -436,7 +436,16 @@ function renderTimeline() {
     const isHito = task.type === 'Hito';
     const width = isHito ? dayW : Math.max(34, len * dayW - 8);
     const blockCls = ['Tema','Subtema','Hito'].includes(task.type)
-      ? `type-${task.type}` : `priority-${task.priority}`;
+      ? 'type-' + task.type : 'priority-' + task.priority;
+
+    const progColor = task.overdue ? 'red' : 'green';
+    const progHtml = !isCompact ? '<div class="prog-wrap" style="width:100%;margin-top:4px"><div class="prog-fill ' + progColor + '" style="width:' + (task.progress||0) + '%"></div></div>' : '';
+    
+    const todayHtml = (todayOffset >= 0 && todayOffset < span) 
+      ? '<div class="today-line" style="left:' + (todayOffset * dayW + dayW/2) + 'px"></div>' : '';
+
+    const subHtml = (!isHito && !isCompact) 
+      ? '<div class="b-sub">' + escHtml(task.start_date||'') + ' → ' + escHtml(task.due_date||'') + ' · ' + (task.progress||0) + '%</div>' : '';
 
     html += `
       <div class="tl-row row-${escHtml(task.type)}${isCompact ? ' compact' : ''}">
@@ -444,25 +453,22 @@ function renderTimeline() {
           <div class="tl-label theme-${escHtml(task.type)}">
             <div class="tl-title" data-open="${escHtml(task.task_id)}">${escHtml(task.title)}</div>
             <div class="tl-meta">${escHtml(projName(task.project_id))} · ${escHtml(task.status)} · ${escHtml(task.assignee_name || userName(task.assignee_user_id) || 'Sin asignar')}</div>
-            ${!isCompact ? `<div class="prog-wrap" style="width:100%;margin-top:4px"><div class="prog-fill ${task.overdue?'red':'green'}" style="width:${task.progress||0}%"></div></div>` : ''}
+            ${progHtml}
           </div>
         </div>
         <div class="tl-cells" style="width:${cellsW}px;flex-shrink:0">
           ${Array.from({ length: span }, (_,i) => {
             const isT = i === todayOffset;
-            return `<div class="day-cell${isT?' today-col':''}"></div>`;
+            return '<div class="day-cell' + (isT?' today-col':'') + '"></div>';
           }).join('')}
-          ${todayOffset >= 0 && todayOffset < span
-            ? `<div class="today-line" style="left:${todayOffset * dayW + dayW/2}px"></div>` : ''}
+          ${todayHtml}
           <div class="tl-block ${blockCls} status-${normalClass(task.status)}"
             data-open="${escHtml(task.task_id)}"
             data-tt="${escHtml(task.task_id)}"
             data-dbl="${escHtml(task.task_id)}"
             style="left:${left}px;width:${width}px;border-left:4px solid ${projColor(task.project_id)}">
             <div class="b-title">${escHtml(task.title)}</div>
-            ${!isHito && !isCompact
-              ? `<div class="b-sub">${escHtml(task.start_date||'')} → ${escHtml(task.due_date||'')} · ${task.progress||0}%</div>`
-              : ''}
+            ${subHtml}
           </div>
         </div>
       </div>
@@ -560,40 +566,61 @@ function renderCalMiniGantt(year, month, tasks) {
   if (!projIds.length) return '<div class="muted small">Sin proyectos en este mes.</div>';
 
   const dayPct = 100 / daysInM;
-  return `<div class="mini-gantt-wrap">
-    <div class="mg-header">
-      <div class="mg-label"></div>
-      <div class="mg-days">
-        ${Array.from({length:daysInM},(_,i)=>`<div class="mg-day${i+1===todayDay?' mg-today':''}">${i+1}</div>`).join('')}
-      </div>
-    </div>
-    ${projIds.map(pid => {
-      const p = state.app.projects.find(x=>x.project_id===pid);
-      const pColor = p?.color||'#0f3d1d';
-      const pTasks = projMap[pid];
-      const avg = Math.round(pTasks.reduce((a,t)=>a+Number(t.progress||0),0)/pTasks.length);
-      return `<div class="mg-proj-row">
+  
+  const headerDays = Array.from({length:daysInM},(_,i) => {
+    return '<div class="mg-day' + (i+1===todayDay?' mg-today':'') + '">' + (i+1) + '</div>';
+  }).join('');
+
+  let rowsHtml = '';
+  projIds.forEach(pid => {
+    const p = state.app.projects.find(x=>x.project_id===pid);
+    const pColor = p?.color||'#0f3d1d';
+    const pTasks = projMap[pid];
+    const avg = Math.round(pTasks.reduce((a,t)=>a+Number(t.progress||0),0)/pTasks.length);
+    
+    let blockCells = '';
+    for(let i=0; i<daysInM; i++) blockCells += '<div class="mg-day-cell"></div>';
+    
+    const tlHtml = todayDay ? '<div class="mg-today-line" style="left:' + ((todayDay-1)*dayPct) + '%"></div>' : '';
+    
+    const taskBlocks = pTasks.map(t=>{
+      const ts=t.start_date||t.due_date||mStart; const te=t.due_date||t.start_date||mStart;
+      const s=ts<mStart?mStart:ts; const e=te>mEnd?mEnd:te;
+      const sd=Number(s.slice(8)); const ed=Number(e.slice(8));
+      const lp=((sd-1)*dayPct); const wp=Math.max(dayPct,((ed-sd+1)*dayPct));
+      const bc=t.overdue?'#c0392b':pColor;
+      const op=t.status==='Completada'?0.45:0.82;
+      return '<div class="mg-block" data-open="' + escHtml(t.task_id) + '" data-tt="' + escHtml(t.task_id) + '" ' +
+        'style="left:' + lp + '%;width:' + wp + '%;background:' + bc + ';opacity:' + op + '" ' +
+        'title="' + escHtml(t.title) + '"></div>';
+    }).join('');
+
+    rowsHtml += `
+      <div class="mg-proj-row">
         <div class="mg-label" title="${escHtml(p?.project_name||pid)}" style="border-left:3px solid ${pColor}">
           <span>${escHtml(projNameShort(pid))}</span>
           <span class="mg-pct">${avg}%</span>
         </div>
         <div class="mg-days" style="position:relative">
-          ${Array.from({length:daysInM},()=>'<div class="mg-day-cell"></div>').join('')}
-          ${todayDay?`<div class="mg-today-line" style="left:${(todayDay-1)*dayPct}%"></div>`:''}
-          ${pTasks.map(t=>{
-            const ts=t.start_date||t.due_date||mStart; const te=t.due_date||t.start_date||mStart;
-            const s=ts<mStart?mStart:ts; const e=te>mEnd?mEnd:te;
-            const sd=Number(s.slice(8)); const ed=Number(e.slice(8));
-            const lp=((sd-1)*dayPct); const wp=Math.max(dayPct,((ed-sd+1)*dayPct));
-            const bc=t.overdue?'#c0392b':pColor;
-            return `<div class="mg-block" data-open="${escHtml(t.task_id)}" data-tt="${escHtml(t.task_id)}"
-              style="left:${lp}%;width:${wp}%;background:${bc};opacity:${t.status==='Completada'?0.45:0.82}"
-              title="${escHtml(t.title)}"></div>`;
-          }).join('')}
+          ${blockCells}
+          ${tlHtml}
+          ${taskBlocks}
         </div>
-      </div>`;
-    }).join('')}
-  </div>`;
+      </div>
+    `;
+  });
+
+  return `
+  <div class="mini-gantt-wrap">
+    <div class="mg-header">
+      <div class="mg-label"></div>
+      <div class="mg-days">
+        ${headerDays}
+      </div>
+    </div>
+    ${rowsHtml}
+  </div>
+  `;
 }
 
 function renderCalendar() {
