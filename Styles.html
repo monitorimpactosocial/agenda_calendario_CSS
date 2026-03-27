@@ -955,12 +955,12 @@ textarea { resize: vertical; min-height: 80px; }
 .proj-pct { font-weight: 500; opacity: .7; }
 
 .day-chip {
-  display: block; font-size: 10.5px; font-weight: 600;
-  padding: 2px 5px; border-radius: 5px; margin-bottom: 2px;
+  display: block; font-size: 10px; font-weight: 500;
+  padding: 1px 4px; border-radius: 4px; margin-bottom: 2px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  cursor: pointer; transition: opacity .15s;
+  cursor: pointer; transition: opacity .15s, transform .1s;
 }
-.day-chip:hover { opacity: .75; }
+.day-chip:hover { opacity: 1; transform: scale(1.02); }
 
 /* ═══════════════════════════════════════
    MINI-GANTT (calendario sidebar)

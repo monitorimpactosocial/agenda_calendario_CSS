@@ -655,7 +655,7 @@ function renderCalendar() {
       const pColor = projColor(t.project_id);
       const shortTitle = (t.title||'').slice(0,22) + ((t.title||'').length>22?'...':'');
       return '<span class="day-chip" data-open="' + escHtml(t.task_id) + '" data-tt="' + escHtml(t.task_id) + '" ' +
-        'style="background:' + pColor + '22;color:' + pColor + ';border-left:3px solid ' + pColor + '">' +
+        'style="background:' + pColor + '15;color:' + pColor + ';">' +
         escHtml(shortTitle) + '</span>';
     }).join('');
 
